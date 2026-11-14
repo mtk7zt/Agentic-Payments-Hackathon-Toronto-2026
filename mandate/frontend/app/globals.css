@@ -1,0 +1,85 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html { color-scheme: dark; scroll-behavior: smooth; }
+  body { @apply bg-canvas font-sans text-[16px] text-content antialiased; }
+  :focus-visible { @apply outline-none ring-2 ring-focus ring-offset-2 ring-offset-canvas; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
+
+@layer components {
+  /* Machined plate: a raised slate panel with a lit top edge and a dark bottom edge. */
+  .glass, .plate {
+    @apply border border-white/[0.08] bg-slate-900;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.05), inset 0 -1px 0 rgba(0,0,0,.55), 0 1px 0 rgba(0,0,0,.9);
+  }
+  /* Recessed well: cut into the plate. */
+  .well {
+    @apply border border-white/[0.08];
+    background: #030814;
+    box-shadow: inset 0 2px 5px rgba(0,0,0,.75), inset 0 0 0 1px rgba(0,0,0,.35);
+  }
+  .eyebrow { @apply font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-500; }
+  /* Hardware key. Press travel is 2px and state changes are near-instant. */
+  .btn {
+    @apply inline-flex min-h-[40px] select-none items-center justify-center gap-2 rounded-md px-4 text-[13.5px] font-medium;
+    transition: transform 40ms linear, box-shadow 40ms linear, background-color 60ms linear;
+  }
+  .btn:active { transform: translateY(2px); }
+  .btn:disabled { @apply pointer-events-none; }
+  .btn-ghost {
+    @apply btn border border-white/10 text-slate-200;
+    background: linear-gradient(180deg, #1b2538 0%, #111a2c 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.09), 0 2px 0 #01030a;
+  }
+  .btn-ghost:hover { background: linear-gradient(180deg, #212d44 0%, #141f34 100%); }
+  .btn-ghost:active { box-shadow: inset 0 2px 4px rgba(0,0,0,.65); }
+  .btn-primary {
+    @apply btn border border-emerald-300/40 font-semibold text-slate-950;
+    background: linear-gradient(180deg, #34d399 0%, #10b981 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 2px 0 #064e3b;
+  }
+  .btn-primary:hover { background: linear-gradient(180deg, #4ade9f 0%, #14c08a 100%); }
+  .btn-primary:active { box-shadow: inset 0 2px 4px rgba(0,0,0,.35); }
+  .btn-danger {
+    @apply btn border border-rose-300/40 font-semibold text-slate-950;
+    background: linear-gradient(180deg, #fb7185 0%, #f43f5e 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.35), 0 2px 0 #7f1d2d;
+  }
+  .btn-danger:active { box-shadow: inset 0 2px 4px rgba(0,0,0,.4); }
+  .btn-amber {
+    @apply btn border border-amber-200/40 font-semibold text-slate-950;
+    background: linear-gradient(180deg, #fbbf24 0%, #f59e0b 100%);
+    box-shadow: inset 0 1px 0 rgba(255,255,255,.4), 0 2px 0 #78350f;
+  }
+  .btn-amber:active { box-shadow: inset 0 2px 4px rgba(0,0,0,.35); }
+  .btn:disabled, .btn[aria-disabled="true"] {
+    background: #0b1020; color: #475569; border-color: rgba(255,255,255,.06);
+    box-shadow: inset 0 2px 4px rgba(0,0,0,.6);
+  }
+  .led { @apply inline-block h-1.5 w-1.5 shrink-0 rounded-[1px]; }
+}
+
+/* Lockdown: every control inside drops to a cold amber, non-interactive state. */
+[data-locked="true"] .lockable { pointer-events: none; }
+[data-locked="true"] .lockable .btn,
+[data-locked="true"] .btn.lockable {
+  background: #140d05; color: #b45309; border-color: rgba(180,83,9,.45);
+  box-shadow: inset 0 2px 4px rgba(0,0,0,.7);
+}
+[data-locked="true"] .lockable input[type="range"] { accent-color: #92400e; opacity: .6; }
+[data-locked="true"] .lockable .tint { color: #b45309 !important; }
+[data-locked="true"] .hazard {
+  background-image: repeating-linear-gradient(135deg, rgba(180,83,9,.16) 0 10px, transparent 10px 20px);
+}
+
+.scanlines { background-image: linear-gradient(rgba(255,255,255,.022) 1px, transparent 1px); background-size: 100% 4px; }
+@keyframes pulse-dot { 0% { box-shadow: 0 0 0 0 rgba(16,185,129,.55); } 100% { box-shadow: 0 0 0 7px rgba(16,185,129,0); } }
+.pulse-dot { animation: pulse-dot 1.8s ease-out infinite; }
+::selection { background: rgba(16,185,129,.35); }
+input[type="range"] { height: 6px; }
