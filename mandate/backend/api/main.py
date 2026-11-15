@@ -51,6 +51,7 @@ class Strict(BaseModel):
 
 
 class PolicyPatch(Strict):
+    expected_version: int = Field(strict=True, ge=1)
     max_single_spend: str | None = None
     strict_whitelist: bool | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
@@ -188,7 +189,10 @@ def kill_switch(body: KillSwitch) -> dict[str, Any]:
     revoked = guard(ledger.engage_kill_switch)
     slip = [e for e in ledger.events() if e["type"] == "SESSION_KEY_REVOKED" and e["ref"] in revoked][-len(revoked):] \
         if revoked else []
-    return {"engaged": True, "revoked": revoked, "slip": slip, "chain": ledger.verify_chain()}
+    return {
+        "engaged": True, "revoked": revoked, "slip": slip, "chain": ledger.verify_chain(),
+        "notice": "Paused. Already dispatched payments may still complete; their held funds remain reserved.",
+    }
 
 
 @app.get("/api/v1/purchases/{purchase_id}/evidence", dependencies=[Depends(owner)])

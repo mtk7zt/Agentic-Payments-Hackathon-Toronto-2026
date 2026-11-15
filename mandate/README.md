@@ -94,6 +94,11 @@ unions in the shared types distinguish this backend contract from the simulator.
 Verify the money boundaries and exact reservation/settlement lifecycle with
 `python -m pytest backend/tests/test_money_contract.py` from this directory.
 
+Owner HTTP policy patches require the current `expected_version`; stale edits
+return 409. Resume is refused until local dispatched/unknown exposure and known
+wallet mismatches are reconciled. See `docs/OWNER_CONTROLS.md` for the backend
+contract and the in-flight-payment limits of pause.
+
 The bounded buyer loop exposes discovery, proposal and status tools only, with
 explicit step, time and new-request limits. See `docs/AGENT_LOOP.md` for its model
 callback interface, owner authentication and timeout/replay semantics.

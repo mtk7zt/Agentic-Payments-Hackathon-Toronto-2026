@@ -207,9 +207,15 @@ class Ledger:
 
     # ───────── owner ─────────
 
-    def set_policy(self, **changes: Any) -> Policy:
+    def set_policy(self, *, expected_version: int | None = None, **changes: Any) -> Policy:
+        """Owner HTTP writes supply expected_version; trusted bootstrap callers may omit it."""
         with self._tx():
             cur = self.policy()
+            if expected_version is not None:
+                if type(expected_version) is not int or expected_version < 1:
+                    raise LedgerError("expected policy version must be a positive integer")
+                if cur.version != expected_version:
+                    raise LedgerError("policy version mismatch; refresh state before editing")
             new = replace(cur, **changes, version=cur.version + 1)
             m = self._mandate()
             if new.task_budget_cap < m["held"] + m["settled"]:
@@ -306,7 +312,7 @@ class Ledger:
             self.conn.execute("UPDATE mandate SET policy_json=? WHERE id=?",
                               (replace(cur, paused=True, version=cur.version + 1).canonical(), self.mandate_id))
             self._emit("AGENT_FROZEN", "owner", clause=Clause.AGENT_FROZEN.value,
-                       detail="Kill-switch engaged. No new dispatch claims.")
+                       detail="Kill-switch engaged. No new dispatch claims. Already dispatched payments may still complete.")
             revoked = self.sessions.active_key_ids(self.agent_id)
             for key_id in revoked:
                 self.sessions.set_state(key_id, SessionState.REVOKED)
@@ -317,6 +323,15 @@ class Ledger:
     def release_kill_switch(self) -> None:
         with self._tx():
             cur = self.policy()
+            unresolved = self.conn.execute(
+                "SELECT 1 FROM purchases WHERE mandate_id=? AND stage IN (?,?) LIMIT 1",
+                (self.mandate_id, Stage.DISPATCHED.value, Stage.RECOVERY_UNKNOWN.value)).fetchone()
+            if unresolved:
+                raise LedgerError("cannot resume with unresolved payments; reconcile the original orders first")
+            if self.wallet_status()["dispatch_blocked"]:
+                raise LedgerError("wallet must be reconciled before resume")
+            if not cur.paused:
+                return
             self.conn.execute("UPDATE mandate SET policy_json=? WHERE id=?",
                               (replace(cur, paused=False, version=cur.version + 1).canonical(), self.mandate_id))
             self._emit("AGENT_RESUMED", "owner", detail="Owner released the lockdown")
