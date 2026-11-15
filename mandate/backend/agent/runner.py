@@ -11,6 +11,7 @@ import copy
 import math
 import time
 from collections.abc import Callable
+from contextvars import ContextVar
 from dataclasses import dataclass, field
 from queue import Empty, Queue
 from threading import Thread
@@ -21,6 +22,10 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from ..models.money import parse_milli, validate_milli
 from ..models.purchase import PurchaseIn
+
+_CALL_DEADLINE: ContextVar[tuple[float, Callable[[], float]] | None] = ContextVar(
+    "mandate_call_deadline", default=None,
+)
 
 
 class AgentAction(BaseModel):
@@ -57,13 +62,29 @@ class AgentGateway:
         self._http = client or httpx.Client()
 
     def _request(self, method: str, path: str, body=None, *, timeout_s: float = 5.0) -> dict[str, Any]:
+        if not math.isfinite(timeout_s) or timeout_s <= 0:
+            raise RunDeadline
+        local_deadline = time.monotonic() + timeout_s
+
+        def remaining() -> float:
+            seconds = local_deadline - time.monotonic()
+            bound = _CALL_DEADLINE.get()
+            if bound is not None:
+                seconds = min(seconds, bound[0] - bound[1]())
+            if seconds <= 0:
+                raise RunDeadline
+            return seconds
+
         request = self._http.build_request(
-            method, self._url + path, json=body, timeout=min(5.0, timeout_s),
+            method, self._url + path, json=body, timeout=min(5.0, remaining()),
             headers={"X-Session-Key": self._session_key},
         )
         # Do not inherit owner credentials from an injected/shared HTTP client.
         for header in ("X-Owner-Token", "Authorization", "Cookie"):
             request.headers.pop(header, None)
+        # Validation/JSON serialization may consume time too. Recheck the absolute
+        # run deadline at the last application boundary before starting HTTP.
+        request.extensions["timeout"] = httpx.Timeout(min(5.0, remaining())).as_dict()
         response = self._http.send(request, auth=None, follow_redirects=False)
         response.raise_for_status()
         payload = response.json()
@@ -133,10 +154,15 @@ def _bounded(call: Callable, deadline: float, clock: Callable[[], float]):
     result = Queue(maxsize=1)
 
     def invoke():
+        token = _CALL_DEADLINE.set((deadline, clock))
         try:
+            if clock() >= deadline:
+                raise RunDeadline
             result.put((call(), None))
         except Exception as exc:  # noqa: BLE001 -- Preserve arbitrary callback failures at the worker boundary.
             result.put((None, exc))
+        finally:
+            _CALL_DEADLINE.reset(token)
 
     # A late model callback has no access to the gateway and cannot dispatch.
     # A late HTTP request may already have reached the gateway; retain its key.

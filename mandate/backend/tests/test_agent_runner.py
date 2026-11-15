@@ -7,6 +7,7 @@ import time
 import httpx
 import pytest
 
+from backend.agent import runner as runner_module
 from backend.agent.runner import AgentGateway, AgentRunner, RunLimits
 
 
@@ -151,3 +152,76 @@ def test_slow_tool_retains_key_and_never_dispatches_a_second_request():
     finally:
         release.set()
         assert finished.wait(2)
+
+
+def test_delayed_tool_worker_cannot_send_after_runner_returns(monkeypatch):
+    original_thread = runner_module.Thread
+    release = threading.Event()
+    finished = threading.Event()
+    created = [0]
+    seen = []
+
+    def delayed_thread(*args, **kwargs):
+        created[0] += 1
+        if created[0] == 2:
+            target = kwargs["target"]
+
+            def delayed():
+                try:
+                    release.wait(5)
+                    target()
+                finally:
+                    finished.set()
+
+            kwargs["target"] = delayed
+        return original_thread(*args, **kwargs)
+
+    monkeypatch.setattr(runner_module, "Thread", delayed_thread)
+
+    def transport(request):
+        seen.append(request)
+        return httpx.Response(200, json={"stage": "VERIFIED"})
+
+    with httpx.Client(transport=httpx.MockTransport(transport)) as http:
+        try:
+            result = AgentRunner(AgentGateway("http://gateway.test", "session", http), RunLimits(timeout_s=0.1)).run(
+                lambda history, remaining: proposal("delayed-request"),
+            )
+            assert result.reason == "time_limit" and seen == []
+            release.set()
+            assert finished.wait(2)
+            assert seen == []
+        finally:
+            release.set()
+            finished.wait(2)
+
+
+def test_request_preparation_cannot_consume_deadline_then_send(monkeypatch):
+    clock = [0.0]
+    seen = []
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: seen.append(request) or httpx.Response(200, json={"stage": "VERIFIED"}),
+    )) as http:
+        build = http.build_request
+
+        def slow_build(*args, **kwargs):
+            request = build(*args, **kwargs)
+            clock[0] = 2.0
+            return request
+
+        monkeypatch.setattr(http, "build_request", slow_build)
+        result = AgentRunner(
+            AgentGateway("http://gateway.test", "session", http), RunLimits(timeout_s=1), clock=lambda: clock[0],
+        ).run(lambda history, remaining: proposal("prepare-request"))
+    assert result.reason == "time_limit" and seen == []
+
+
+def test_direct_gateway_refuses_expired_timeout_before_http():
+    seen = []
+    with httpx.Client(transport=httpx.MockTransport(
+        lambda request: seen.append(request) or httpx.Response(200, json={}),
+    )) as http:
+        gateway = AgentGateway("http://gateway.test", "session", http)
+        with pytest.raises(TimeoutError):
+            gateway.discover(timeout_s=0)
+    assert seen == []
