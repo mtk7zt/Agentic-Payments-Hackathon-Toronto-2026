@@ -5,8 +5,8 @@ import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { motion } from "motion/react";
 import { overlay, sheet, utc } from "./shared";
-import { setPaused, verifyChain } from "@/lib/ledger";
-import type { State, Verification } from "@/lib/ledger";
+import { setPaused, verifyChain } from "@/lib/mandate";
+import type { State, Verification } from "@/lib/mandate";
 
 export function KillSwitch({ open, onOpenChange, s }: { open: boolean; onOpenChange: (o: boolean) => void; s: State }) {
   return (
@@ -36,7 +36,9 @@ export function KillSwitch({ open, onOpenChange, s }: { open: boolean; onOpenCha
 
 /** Printed the moment the kill-switch commits; verifies itself against the chain. */
 export function RevocationSlip({ s }: { s: State }) {
-  const evt = [...s.events].reverse().find((e) => e.type === "SESSION_KEY_REVOKED" && e.clause === "AGENT_FROZEN");
+  // The key revocation is the slip. If no key was active, the freeze event itself stands in.
+  const recent = [...s.events].reverse();
+  const evt = recent.find((e) => e.type === "SESSION_KEY_REVOKED" && e.clause === "AGENT_FROZEN") ?? recent.find((e) => e.type === "AGENT_FROZEN");
   const [v, setV] = useState<Verification>({ status: "running" });
   const seq = evt?.seq;
   useEffect(() => {
@@ -54,7 +56,7 @@ export function RevocationSlip({ s }: { s: State }) {
       <div className="well grid gap-x-8 gap-y-3 rounded-md border-amber-700/50 p-4 lg:grid-cols-[auto_1fr_auto] lg:items-center">
         <div>
           <p className="eyebrow text-amber-400">Session revocation slip</p>
-          <p className="mt-1 font-mono text-[17px] tabular-nums text-rose-300">{evt.ref} · REVOKED</p>
+          <p className="mt-1 font-mono text-[17px] tabular-nums text-rose-300">{evt.ref ?? "agent"} · {evt.type === "SESSION_KEY_REVOKED" ? "REVOKED" : "FROZEN"}</p>
           <p className="font-mono text-[10.5px] text-slate-500">event #{evt.seq} · {utc(evt.ts)}Z · actor owner</p>
         </div>
         <dl className="grid gap-x-6 gap-y-1 font-mono text-[11px] sm:grid-cols-[auto_1fr]">

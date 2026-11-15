@@ -69,7 +69,7 @@ CREATE TABLE IF NOT EXISTS dispatch_claims (
   created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS events (
-  seq INTEGER PRIMARY KEY, ts REAL NOT NULL, type TEXT NOT NULL, actor TEXT NOT NULL,
+  seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, actor TEXT NOT NULL,
   purchase_id TEXT, amount INTEGER, clause TEXT, ref TEXT, detail TEXT NOT NULL,
   policy_hash TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL UNIQUE
 );
@@ -144,8 +144,9 @@ class Ledger:
               clause: str | None = None, ref: str | None = None, detail: str = "") -> None:
         last = self.conn.execute("SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1").fetchone()
         prev = last["hash"] if last else GENESIS
+        # ts is integer milliseconds so Python and the browser serialize it identically when re-hashing.
         body = {
-            "seq": (last["seq"] if last else 0) + 1, "ts": round(time.time(), 3), "type": type_, "actor": actor,
+            "seq": (last["seq"] if last else 0) + 1, "ts": int(time.time() * 1000), "type": type_, "actor": actor,
             "purchase_id": purchase_id, "amount": amount, "clause": clause, "ref": ref, "detail": detail,
             "policy_hash": self.policy().hash(),
         }
@@ -186,6 +187,12 @@ class Ledger:
     def events(self, after_seq: int = 0) -> list[dict[str, Any]]:
         with self._lock:
             return [dict(r) for r in self.conn.execute("SELECT * FROM events WHERE seq>? ORDER BY seq", (after_seq,))]
+
+    def session_keys(self) -> list[dict[str, str]]:
+        """Key ids and states, oldest first. Tokens are never stored, so none are returned."""
+        with self._lock:
+            return [{"key_id": r["key_id"], "state": r["state"]}
+                    for r in self.conn.execute("SELECT key_id, state FROM session_keys ORDER BY rowid")]
 
     def verify_chain(self) -> dict[str, Any]:
         """Re-hash every event. Detects edits, reordering and gaps."""

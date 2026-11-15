@@ -24,10 +24,12 @@ frontend/                  Next.js 14 (App Router) + Tailwind
   app/page.tsx             /        landing page with the live attack stream
   app/console/page.tsx     /console operator cockpit
   components/              CockpitHeader, PolicyMatrix, TransactionStream, EvidenceModal, ...
-  lib/ledger.ts            simulated in-browser ledger the cockpit runs on today
-  lib/api.ts               typed client + SSE subscribe for the backend
+  lib/mandate.ts           the cockpit's data source: live gateway, or simulated when it is offline
+  lib/api.ts               typed gateway client and the /api/events SSE subscription
+  lib/ledger.ts            simulated in-browser ledger used as the fallback
 scripts/smoke.py           CLI smoke test (MND-27)
-docs/SPRINTS.md            sprint plan
+docs/SPRINTS.md            sprint blueprint: criteria, contract and verify command per ticket
+docs/MANDATE_SYSTEM_GUIDE.md  plain-language guide for judges (PDF exports alongside)
 ```
 
 ## Run it
@@ -41,7 +43,11 @@ python scripts/smoke.py               # mock rail, five scenarios, prints a rece
 uvicorn backend.api.main:app --reload # http://localhost:8000/docs
 
 # frontend
-cd frontend && npm install && npm run dev   # http://localhost:3000
+cd frontend && npm install && npm run dev   # http://localhost:3000, simulated ledger
+
+# frontend against the running gateway (live event stream)
+NEXT_PUBLIC_MANDATE_API_URL=http://localhost:8000 npm run dev
+# PowerShell: $env:NEXT_PUBLIC_MANDATE_API_URL="http://localhost:8000"; npm run dev
 ```
 
 ## What the gateway guarantees
@@ -97,6 +103,6 @@ Known gaps, stated plainly:
 - **Not run against the live API.** The adapter is tested against a mocked transport only. The reference does not document the create-order response fields, so `GoatFlowRail._order_id` accepts the common shapes and must be checked against a real response (MND-01).
 - **Order creation is not payment.** `POST /api/v1/orders` opens an order and returns payment terms. The payer-side authorization that actually moves USDC is not implemented, so a live order stays `DISPATCHED` until it is paid some other way and `reconcile` sees `PAYMENT_CONFIRMED`.
 - **Qatom.** No Qatom contract is assumed anywhere. It plugs in as another `PaymentRail` once its API is confirmed.
-- **The cockpit is not wired to the backend yet.** It runs on `frontend/lib/ledger.ts`, a simulated ledger that mirrors the backend's rules. `frontend/lib/api.ts` is the seam for connecting them.
+- **The cockpit talks to the gateway, with limits.** With `NEXT_PUBLIC_MANDATE_API_URL` set it reads state over REST and events over SSE at `/api/events`, and falls back to the simulated ledger within about a second if the gateway stops, retrying every 10 s. The stream has no authentication yet, the seller-failure and rail-timeout demo keys exist only in the simulation, and the cockpit's demo keys call the owner route to issue the agent's key, which a real agent must never be able to do.
 - **Owner auth is a single shared token** (`MANDATE_OWNER_TOKEN`). With it unset the API is open, for local demos only.
 - Not affiliated with Y Combinator, GOAT Network or Qatom.

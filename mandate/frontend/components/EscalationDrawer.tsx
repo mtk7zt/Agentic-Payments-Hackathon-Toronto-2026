@@ -6,8 +6,8 @@ import { X } from "lucide-react";
 import { Badge, Money } from "./kit";
 import type { Tone } from "./kit";
 import { Line, overlay, sheet } from "./shared";
-import { CLAUSE_TEXT, approveAndRun, available, fmt, release, short } from "@/lib/ledger";
-import type { Purchase, State } from "@/lib/ledger";
+import { CLAUSE_TEXT, approveAndRun, available, fmt, release, short } from "@/lib/mandate";
+import type { Purchase, State } from "@/lib/mandate";
 
 export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase | null; s: State; now: number; onClose: () => void; onError: (m: string) => void }) {
   if (!p) return null;
@@ -27,7 +27,7 @@ export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase 
             <div>
               <div className="flex flex-wrap gap-2">
                 <Badge tone="warning">Human review</Badge>
-                <Badge tone={rTone}>Risk {risk} · rule-based</Badge>
+                {p.risk !== null && <Badge tone={rTone}>Risk {risk} · rule-based</Badge>}
               </div>
               <Dialog.Title className="mt-3 text-[19px] font-semibold tracking-tight">Authorize this purchase?</Dialog.Title>
               <Dialog.Description className="mt-1.5 text-[14px] leading-relaxed text-slate-300">
@@ -70,8 +70,8 @@ export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase 
               type="button"
               disabled={!live}
               className="btn-primary min-h-[46px] w-full text-[14.5px]"
-              onClick={() => {
-                const r = approveAndRun(p.id);
+              onClick={async () => {
+                const r = await approveAndRun(p.id);
                 if (r.ok) onClose();
                 else onError(r.error);
               }}

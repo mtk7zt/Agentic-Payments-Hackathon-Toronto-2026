@@ -5,10 +5,9 @@ import { useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check, ChevronsUpDown } from "lucide-react";
 import { Logo } from "./kit";
-import { BUDGET, available, fmt } from "@/lib/ledger";
-import type { State } from "@/lib/ledger";
-
-const RAIL_LABEL = process.env.NEXT_PUBLIC_MANDATE_API_URL ? "GOAT Flow x402 · backend" : "simulated";
+import { BUDGET, available, fmt } from "@/lib/mandate";
+import type { Mode, State } from "@/lib/mandate";
+import { API_URL } from "@/lib/api";
 
 function Stat({ label, v, tone = "text-content" }: { label: string; v: number; tone?: string }) {
   return (
@@ -19,7 +18,7 @@ function Stat({ label, v, tone = "text-content" }: { label: string; v: number; t
   );
 }
 
-export function CockpitHeader({ s, onKill }: { s: State; onKill: () => void }) {
+export function CockpitHeader({ s, mode, onKill }: { s: State; mode: Mode; onKill: () => void }) {
   const [menu, setMenu] = useState(false);
   const locked = s.policy.paused;
   return (
@@ -62,9 +61,12 @@ export function CockpitHeader({ s, onKill }: { s: State; onKill: () => void }) {
             <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Unit</p>
             <p className="font-mono text-[12px] leading-[20px] text-slate-400">USD-TDN · ‰</p>
           </div>
-          <div className="hidden whitespace-nowrap px-4 py-2 min-[1500px]:block">
-            <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Rail</p>
-            <p className="font-mono text-[12px] leading-[20px] text-slate-400">{RAIL_LABEL}</p>
+          <div className="hidden whitespace-nowrap px-4 py-2 min-[1280px]:block">
+            <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Source</p>
+            <p className={`flex items-center gap-2 font-mono text-[12px] leading-[20px] ${mode === "live" ? "text-emerald-300" : "text-slate-400"}`}>
+              <span aria-hidden="true" className={`led ${mode === "live" ? "bg-emerald-400" : mode === "connecting" ? "bg-amber-400" : "bg-slate-500"}`} />
+              {mode === "live" ? "gateway · SSE" : mode === "connecting" ? "connecting" : API_URL ? "gateway offline · simulated" : "simulated"}
+            </p>
           </div>
         </div>
 

@@ -101,6 +101,7 @@ def state() -> dict[str, Any]:
         "mandate_id": ledger.mandate_id, "rail": rail.name, "unit": "USD-TDN thousandths",
         "balances": ledger.balances(), "policy": {**json.loads(pol.canonical()), "hash": pol.hash()},
         "purchases": [view(p) for p in ledger.purchases()], "chain": ledger.verify_chain(),
+        "session_keys": ledger.session_keys(),
     }
 
 
@@ -205,3 +206,9 @@ async def stream(request: Request, last_event_id: str | None = Header(default=No
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/events")
+async def events(request: Request, last_event_id: str | None = Header(default=None)) -> StreamingResponse:
+    """Alias of /api/v1/stream, the path the cockpit connects to."""
+    return await stream(request, last_event_id)

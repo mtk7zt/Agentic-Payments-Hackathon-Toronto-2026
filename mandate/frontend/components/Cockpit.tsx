@@ -8,8 +8,8 @@ import { EvidenceModal } from "./EvidenceModal";
 import { KillSwitch, RevocationSlip } from "./KillSwitch";
 import { PolicyMatrix } from "./PolicyMatrix";
 import { TransactionStream } from "./TransactionStream";
-import { release, reset, run, useLedger } from "@/lib/ledger";
-import type { ScenarioKey } from "@/lib/ledger";
+import { isLive, release, reset, run, scenarioAvailable, useMandate, useMode } from "@/lib/mandate";
+import type { ScenarioKey } from "@/lib/mandate";
 
 const TRIGGERS: { k: ScenarioKey; label: string; led: string }[] = [
   { k: "micro", label: "1. Run Micro-Purchase ($0.040)", led: "bg-emerald-400" },
@@ -20,7 +20,8 @@ const TRIGGERS: { k: ScenarioKey; label: string; led: string }[] = [
 ];
 
 export function Cockpit() {
-  const s = useLedger();
+  const s = useMandate();
+  const mode = useMode();
   const locked = s.policy.paused;
   const [kill, setKill] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
@@ -37,7 +38,7 @@ export function Cockpit() {
   useEffect(() => {
     for (const p of s.purchases) {
       if (p.stage !== "PENDING_APPROVAL") continue;
-      if ((p.expiresAt ?? 0) <= now) release(p.id, "EXPIRED");
+      if ((p.expiresAt ?? 0) <= now) { if (!isLive()) release(p.id, "EXPIRED"); }
       else if (!seenPending.current.has(p.id)) {
         seenPending.current.add(p.id);
         setReviewId(p.id);
@@ -56,7 +57,7 @@ export function Cockpit() {
 
   return (
     <div data-locked={locked} className="relative flex min-h-screen flex-col">
-      <CockpitHeader s={s} onKill={() => setKill(true)} />
+      <CockpitHeader s={s} mode={mode} onKill={() => setKill(true)} />
 
       {locked && (
         <div className="border-b border-amber-700/50 bg-[#140d05]">
@@ -81,14 +82,18 @@ export function Cockpit() {
         <div className={`mx-auto flex max-w-[1600px] items-center gap-2 overflow-x-auto px-5 py-2.5 lg:px-8 ${locked ? "border-t border-white/[0.08]" : ""}`}>
           <span className="eyebrow mr-1 hidden shrink-0 md:block">Demo keys</span>
           {TRIGGERS.map((t) => (
-            <button key={t.k} type="button" disabled={locked} onClick={() => run(t.k)} className="btn-ghost lockable shrink-0 text-[12.5px]">
+            <button key={t.k} type="button" disabled={locked || !scenarioAvailable(t.k)} title={scenarioAvailable(t.k) ? undefined : "Needs a failing seller or a silent rail: simulated ledger only"} onClick={() => run(t.k)} className="btn-ghost lockable shrink-0 text-[12.5px]">
               <span aria-hidden="true" className={`led ${locked ? "bg-amber-800" : t.led}`} />
               {t.label}
             </button>
           ))}
-          <button type="button" onClick={() => { reset(); seenPending.current.clear(); }} className="btn ml-auto shrink-0 text-[12px] text-slate-500 hover:text-content">
-            Reset
-          </button>
+          {mode === "simulated" ? (
+            <button type="button" onClick={() => { reset(); seenPending.current.clear(); }} className="btn ml-auto shrink-0 text-[12px] text-slate-500 hover:text-content">
+              Reset
+            </button>
+          ) : (
+            <span className="ml-auto shrink-0 font-mono text-[10.5px] text-slate-500">{mode === "live" ? "live gateway · mock rail" : "connecting…"}</span>
+          )}
         </div>
       </div>
 

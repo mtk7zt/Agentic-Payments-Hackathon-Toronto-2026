@@ -39,3 +39,23 @@ def test_kill_switch_returns_a_revocation_slip():
     assert r["engaged"] and r["revoked"] and r["slip"][0]["type"] == "SESSION_KEY_REVOKED" and r["chain"]["intact"]
     assert c.post("/api/v1/purchases", json=body(8), headers={"X-Session-Key": token}).status_code == 401
     assert c.post("/api/v1/kill-switch", json={"engaged": False}).json() == {"engaged": False}
+
+
+def test_state_lists_session_keys_without_tokens():
+    issued = c.post("/api/v1/session-keys").json()
+    keys = c.get("/api/v1/state").json()["session_keys"]
+    assert {"key_id": issued["key_id"], "state": "active"} in keys
+    assert all(set(k) == {"key_id", "state"} for k in keys)
+
+
+def test_event_timestamps_are_integer_milliseconds():
+    # The browser re-hashes events; an integer serializes identically in Python and JavaScript.
+    from backend.api.main import ledger
+
+    assert all(isinstance(e["ts"], int) and e["ts"] > 1_600_000_000_000 for e in ledger.events())
+    assert ledger.verify_chain()["intact"]
+
+
+def test_api_events_route_is_registered():
+    paths = {r.path for r in app.routes}
+    assert {"/api/events", "/api/v1/stream"} <= paths
