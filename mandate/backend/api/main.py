@@ -21,7 +21,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..core.ledger import Ledger, LedgerError
 from ..core.policy import Intent
 from ..core.sessions import SessionState
-from ..models.money import MoneyError, format_milli, parse_milli
+from ..models.money import MAX_MILLI, MoneyError, format_milli, parse_milli
 from ..models.purchase import PurchaseIn
 from ..services import orchestrator
 from ..services.payment_rail import rail_from_env
@@ -55,6 +55,11 @@ class PolicyPatch(Strict):
     strict_whitelist: bool | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
     whitelisted_sellers: dict[str, str] | None = None
+
+
+class WalletObservation(Strict):
+    balance_milli: int = Field(strict=True, ge=0, le=MAX_MILLI)
+    reference: str = Field(min_length=1, max_length=512)
 
 
 class KillSwitch(Strict):
@@ -221,3 +226,23 @@ async def stream(request: Request, last_event_id: str | None = Header(default=No
 
     return StreamingResponse(gen(), media_type="text/event-stream",
                              headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+
+
+@app.get("/api/v1/wallet", dependencies=[Depends(owner)])
+def wallet_status() -> dict[str, Any]:
+    return ledger.wallet_status()
+
+
+@app.post("/api/v1/wallet/configure", dependencies=[Depends(owner)])
+def configure_wallet(body: WalletObservation) -> dict[str, Any]:
+    return guard(ledger.configure_wallet, body.balance_milli, body.reference)
+
+
+@app.post("/api/v1/wallet/observations", dependencies=[Depends(owner)])
+def observe_wallet(body: WalletObservation) -> dict[str, Any]:
+    return guard(ledger.record_wallet_observation, body.balance_milli, body.reference)
+
+
+@app.post("/api/v1/wallet/reconcile", dependencies=[Depends(owner)])
+def reconcile_wallet(body: WalletObservation) -> dict[str, Any]:
+    return guard(ledger.reconcile_wallet, body.balance_milli, body.reference)

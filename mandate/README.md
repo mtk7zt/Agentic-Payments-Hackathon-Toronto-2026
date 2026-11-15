@@ -112,3 +112,7 @@ Known gaps, stated plainly:
 - **The cockpit is not wired to the backend yet.** It runs on `frontend/lib/ledger.ts`, a simulated ledger that mirrors the backend's rules. `frontend/lib/api.ts` is the seam for connecting them.
 - **Owner auth is a single shared token** (`MANDATE_OWNER_TOKEN`). Owner routes deny all requests when it is unset. Configure it before issuing agent sessions or using owner state, evidence, approvals or event-stream endpoints.
 - Not affiliated with Y Combinator, GOAT Network or Qatom.
+
+Wallet allocations can optionally be checked against trusted owner-recorded
+snapshots. See [wallet monitoring](docs/WALLET_MONITORING.md) for the API,
+provenance requirements, reconciliation workflow, and limits.

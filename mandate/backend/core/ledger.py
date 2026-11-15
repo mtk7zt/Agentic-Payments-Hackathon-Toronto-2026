@@ -54,6 +54,12 @@ CREATE TABLE IF NOT EXISTS mandate (
   held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0),
   settled INTEGER NOT NULL DEFAULT 0 CHECK (settled >= 0)
 );
+CREATE TABLE IF NOT EXISTS wallet_monitor (
+  mandate_id TEXT PRIMARY KEY, baseline INTEGER NOT NULL, baseline_settled INTEGER NOT NULL,
+  observed INTEGER NOT NULL, observed_settled INTEGER NOT NULL,
+  mismatch INTEGER NOT NULL CHECK (mismatch IN (0,1)), reference TEXT NOT NULL,
+  recorded_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS purchases (
   id TEXT PRIMARY KEY, mandate_id TEXT NOT NULL, request_key TEXT NOT NULL UNIQUE,
   fingerprint TEXT NOT NULL, seller_domain TEXT NOT NULL, seller_address TEXT NOT NULL,
@@ -211,6 +217,81 @@ class Ledger:
             self.conn.execute("UPDATE mandate SET policy_json=? WHERE id=?", (new.canonical(), self.mandate_id))
             self._emit("POLICY_SNAPSHOT", "owner", detail=f"Policy v{new.version} snapshot")
             return new
+
+    def wallet_status(self) -> dict[str, Any]:
+        """Owner-supplied snapshots, never a live provider balance verification."""
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM wallet_monitor WHERE mandate_id=?",
+                                    (self.mandate_id,)).fetchone()
+            if not row:
+                return {"configured": False, "mismatch": False, "dispatch_blocked": False,
+                        "provenance": "unconfigured"}
+            settled = self._mandate()["settled"]
+            expected = row["baseline"] - (settled - row["baseline_settled"])
+            coverage = expected >= self.policy().task_budget_cap - settled
+            return {"configured": True, "mismatch": bool(row["mismatch"]),
+                    "dispatch_blocked": bool(row["mismatch"]) or not coverage,
+                    "expected_milli": expected, "observed_milli": row["observed"],
+                    "observed_at_settled_milli": row["observed_settled"],
+                    "allocation_covered": coverage, "reference": row["reference"],
+                    "recorded_at": row["recorded_at"], "provenance": "owner_recorded"}
+
+    def _wallet_input(self, balance_milli: int, reference: str) -> None:
+        try:
+            validate_milli(balance_milli)
+        except MoneyError as exc:
+            raise LedgerError(str(exc)) from exc
+        if not isinstance(reference, str) or not reference.strip() or len(reference) > 512:
+            raise LedgerError("wallet observation requires a reference of 1 to 512 characters")
+
+    def _wallet_baseline(self, balance_milli: int, reference: str, *, configure: bool) -> dict[str, Any]:
+        self._wallet_input(balance_milli, reference)
+        with self._tx():
+            configured = self.wallet_status()["configured"]
+            if configure == configured:
+                raise LedgerError("wallet already configured" if configure else "wallet not configured")
+            unresolved = self.conn.execute(
+                "SELECT 1 FROM purchases WHERE mandate_id=? AND stage IN (?,?) LIMIT 1",
+                (self.mandate_id, Stage.DISPATCHED.value, Stage.RECOVERY_UNKNOWN.value)).fetchone()
+            if unresolved:
+                raise LedgerError("wallet baseline cannot change with unresolved payments")
+            settled = self._mandate()["settled"]
+            self.conn.execute(
+                "INSERT INTO wallet_monitor VALUES (?,?,?,?,?,?,?,?) "
+                "ON CONFLICT(mandate_id) DO UPDATE SET baseline=excluded.baseline, "
+                "baseline_settled=excluded.baseline_settled, observed=excluded.observed, "
+                "observed_settled=excluded.observed_settled, mismatch=0, "
+                "reference=excluded.reference, recorded_at=excluded.recorded_at",
+                (self.mandate_id, balance_milli, settled, balance_milli, settled, 0, reference, time.time()))
+            self._emit("WALLET_CONFIGURED" if configure else "WALLET_RECONCILED", "owner",
+                       amount=balance_milli, ref=reference,
+                       detail=canonical({"provenance": "owner_recorded", "baseline_settled_milli": settled,
+                                         "previously_configured": configured}))
+            return self.wallet_status()
+
+    def configure_wallet(self, balance_milli: int, reference: str) -> dict[str, Any]:
+        """Establish a trusted owner baseline once; monitoring cannot be disabled."""
+        return self._wallet_baseline(balance_milli, reference, configure=True)
+
+    def reconcile_wallet(self, balance_milli: int, reference: str) -> dict[str, Any]:
+        """Explicit owner acknowledgement of externally explained wallet movements."""
+        return self._wallet_baseline(balance_milli, reference, configure=False)
+
+    def record_wallet_observation(self, balance_milli: int, reference: str) -> dict[str, Any]:
+        self._wallet_input(balance_milli, reference)
+        with self._tx():
+            status = self.wallet_status()
+            if not status["configured"]:
+                raise LedgerError("wallet not configured")
+            mismatch = balance_milli != status["expected_milli"]
+            self.conn.execute(
+                "UPDATE wallet_monitor SET observed=?, observed_settled=?, mismatch=?, reference=?, recorded_at=? "
+                "WHERE mandate_id=?",
+                (balance_milli, self._mandate()["settled"], int(mismatch), reference, time.time(), self.mandate_id))
+            self._emit("WALLET_OBSERVED", "owner", amount=balance_milli, ref=reference,
+                       detail=canonical({"provenance": "owner_recorded", "expected_milli": status["expected_milli"],
+                                         "mismatch": mismatch}))
+            return self.wallet_status()
 
     def issue_session_key(self) -> tuple[str, str]:
         with self._tx():
@@ -381,6 +462,8 @@ class Ledger:
             if self.policy().paused:
                 raise LedgerError("kill-switch engaged")
             self._recheck_reserved_policy(p, require_approval=True)
+            if self.wallet_status()["dispatch_blocked"]:
+                raise LedgerError("wallet mismatch or insufficient monitored wallet coverage")
             key = f"mnd-{p['fingerprint'][:8]}-{p['id']}"
             try:
                 self.conn.execute(
