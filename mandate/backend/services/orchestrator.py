@@ -17,7 +17,7 @@ def _deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> None:
     p = ledger.purchase(purchase_id)
     try:
         payload = seller.fetch(item=p["item"], rail_order_id=p["rail_order_id"], request_id=p["id"])
-    except Exception as exc:  # seller outage after payment
+    except Exception as exc:  # noqa: BLE001 - any seller failure after payment must retain settlement
         ledger.record_delivery(purchase_id, False, f"Seller unreachable ({type(exc).__name__})")
         return
     d = verify_delivery(payload, item=p["item"], request_id=p["id"])
@@ -28,7 +28,13 @@ def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str)
     """Pay for a RESERVED purchase. Safe to call once; a second call cannot claim again."""
     claim_key = ledger.claim_dispatch(purchase_id)  # durable intent, before any money moves
     amount = ledger.purchase(purchase_id)["amount"]
-    res = rail.create_order(dapp_order_id=claim_key, amount_milli=amount)
+    try:
+        res = rail.create_order(dapp_order_id=claim_key, amount_milli=amount)
+    except Exception as exc:  # noqa: BLE001 - any adapter failure may follow an accepted payment
+        # An adapter can fail after the rail accepted the request. Never assume
+        # an exception proves the payment did not happen.
+        ledger.mark_unknown(purchase_id, f"Rail call interrupted ({type(exc).__name__})")
+        return ledger.purchase(purchase_id)
 
     if res.outcome is RailOutcome.SETTLED and res.order_id:
         ledger.settle(purchase_id, res.order_id)
@@ -54,7 +60,9 @@ def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: st
         return p
     order_id = rail_order_id or p["rail_order_id"]
     if not order_id:
-        return p  # no reference to look up: stays in recovery for an operator
+        if p["stage"] == Stage.DISPATCHED.value:
+            ledger.mark_unknown(purchase_id, "Dispatch has no durable rail order reference")
+        return ledger.purchase(purchase_id)  # operator must establish the original order
     res = rail.get_order(order_id)
     if res.outcome is RailOutcome.SETTLED:
         ledger.settle(purchase_id, order_id)
