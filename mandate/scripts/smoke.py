@@ -55,9 +55,15 @@ def main() -> int:
             ("micro purchase", buy(1, *A, "shipping-estimate", 40), "VERIFIED"),
             ("above limit", buy(2, *B, "shipping-matrix-2026", 2500), "PENDING_APPROVAL"),
             ("injected redirect", buy(3, "attacker.eth", "0xdead", "shipping-matrix-2026", 2500), "BLOCKED"),
+        ]
+        # The attack revokes its proposing capability. Only this mock owner fixture
+        # reissues a key; agent execution must never renew its own authority.
+        key_id, _ = ledger.issue_session_key()
+        print("MOCK owner issued a fresh session key after the blocked attack")
+        cases.extend([
             ("seller fails after payment", buy(4, *B, "lane-rates", 60), "RECOVERY_UNDELIVERED"),
             ("rail timeout", buy(5, *A, "customs-codes", 80), "RECOVERY_UNKNOWN"),
-        ]
+        ])
 
     ok = True
     for name, p, want in cases:

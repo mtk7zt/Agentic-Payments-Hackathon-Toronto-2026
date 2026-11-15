@@ -301,19 +301,57 @@ class Ledger:
 
     def issue_session_key(self) -> tuple[str, str]:
         with self._tx():
+            if self.policy().paused:
+                raise LedgerError("cannot issue a session key while paused")
             key_id, token = self.sessions.issue(self.agent_id)
             self._emit("SESSION_KEY_ISSUED", "owner", ref=key_id, detail=f"{key_id} issued")
             return key_id, token
 
+    def session_status(self) -> list[dict[str, str]]:
+        """Owner-visible metadata, excluding tokens and their digests."""
+        with self._lock:
+            return [dict(row) for row in self.conn.execute(
+                "SELECT key_id, agent_id, state FROM session_keys WHERE agent_id=? ORDER BY key_id",
+                (self.agent_id,))]
+
+    def change_session_state(self, key_id: str, state: SessionState) -> dict[str, str]:
+        with self._tx():
+            if not isinstance(state, SessionState):
+                raise LedgerError("invalid session state")
+            row = self.conn.execute(
+                "SELECT key_id, agent_id, state FROM session_keys WHERE key_id=? AND agent_id=?",
+                (key_id, self.agent_id)).fetchone()
+            if not row:
+                raise LedgerError("session key not found")
+            if row["state"] == SessionState.REVOKED.value:
+                raise LedgerError("session key is permanently revoked")
+            if state is SessionState.ACTIVE and self.policy().paused:
+                raise LedgerError("cannot activate a session key while paused")
+            if row["state"] != state.value:
+                self.sessions.set_state(key_id, state)
+                event = {SessionState.ACTIVE: "SESSION_KEY_THAWED", SessionState.FROZEN: "SESSION_KEY_FROZEN",
+                         SessionState.REVOKED: "SESSION_KEY_REVOKED"}[state]
+                self._emit(event, "owner", ref=key_id, detail=f"Owner set session state to {state.value}")
+            return {"key_id": key_id, "agent_id": self.agent_id, "state": state.value}
+
+    def _require_active_session(self, key_id: str | None) -> None:
+        # Trusted offline/bootstrap callers can omit a key; HTTP proposals cannot.
+        if key_id is None:
+            return
+        row = self.conn.execute(
+            "SELECT state FROM session_keys WHERE key_id=? AND agent_id=?", (key_id, self.agent_id)).fetchone()
+        if not row or row["state"] != SessionState.ACTIVE.value:
+            raise LedgerError("session key missing, frozen, revoked or belongs to another agent")
+
     def engage_kill_switch(self) -> list[str]:
-        """Pause the mandate and revoke every active key, in one transaction."""
+        """Pause the mandate and revoke every non-revoked key, in one transaction."""
         with self._tx():
             cur = self.policy()
             self.conn.execute("UPDATE mandate SET policy_json=? WHERE id=?",
                               (replace(cur, paused=True, version=cur.version + 1).canonical(), self.mandate_id))
             self._emit("AGENT_FROZEN", "owner", clause=Clause.AGENT_FROZEN.value,
                        detail="Kill-switch engaged. No new dispatch claims. Already dispatched payments may still complete.")
-            revoked = self.sessions.active_key_ids(self.agent_id)
+            revoked = [row["key_id"] for row in self.session_status() if row["state"] != SessionState.REVOKED.value]
             for key_id in revoked:
                 self.sessions.set_state(key_id, SessionState.REVOKED)
                 self._emit("SESSION_KEY_REVOKED", "owner", clause=Clause.AGENT_FROZEN.value, ref=key_id,
@@ -361,6 +399,7 @@ class Ledger:
             "version": 2, "mandate_id": self.mandate_id, "agent_id": self.agent_id, **envelope,
         }).encode()).hexdigest()
         with self._tx():
+            self._require_active_session(session_key_id)
             prior = self.conn.execute("SELECT * FROM purchases WHERE request_key=?", (request_key,)).fetchone()
             if prior:
                 # Compare stored envelopes so pre-v2 purchases retain their original
@@ -411,6 +450,7 @@ class Ledger:
             p = self._purchase(purchase_id)
             if p["stage"] != Stage.PROPOSED.value:
                 raise LedgerError("already evaluated")
+            self._require_active_session(p["session_key_id"])
             pol = self.policy()
             ev = self._evaluate_purchase(p, pol, self.balances()["available"])
             base = {"decision": ev.decision.value, "clause": ev.clause.value,
@@ -450,6 +490,7 @@ class Ledger:
                 raise LedgerError("not awaiting approval")
             if self.policy().paused:
                 raise LedgerError("kill-switch engaged")
+            self._require_active_session(p["session_key_id"])
             if (p["expires_at"] or 0) <= time.time():
                 raise LedgerError("approval window closed")
             self._recheck_reserved_policy(p)
@@ -476,6 +517,7 @@ class Ledger:
                 raise LedgerError("not reserved")
             if self.policy().paused:
                 raise LedgerError("kill-switch engaged")
+            self._require_active_session(p["session_key_id"])
             self._recheck_reserved_policy(p, require_approval=True)
             if self.wallet_status()["dispatch_blocked"]:
                 raise LedgerError("wallet mismatch or insufficient monitored wallet coverage")

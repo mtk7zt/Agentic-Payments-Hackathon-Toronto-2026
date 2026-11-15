@@ -67,6 +67,10 @@ class KillSwitch(Strict):
     engaged: bool
 
 
+class SessionChange(Strict):
+    state: SessionState
+
+
 def owner(x_owner_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("MANDATE_OWNER_TOKEN")
     if not expected or not x_owner_token or not secrets.compare_digest(x_owner_token.encode(), expected.encode()):
@@ -182,7 +186,7 @@ def issue_key() -> dict[str, str]:
 
 @app.post("/api/v1/kill-switch", dependencies=[Depends(owner)])
 def kill_switch(body: KillSwitch) -> dict[str, Any]:
-    """Engaging revokes every active key in the same transaction and returns the revocation slip."""
+    """Engaging revokes active and frozen keys atomically and returns the revocation slip."""
     if not body.engaged:
         guard(ledger.release_kill_switch)
         return {"engaged": False}
@@ -193,6 +197,16 @@ def kill_switch(body: KillSwitch) -> dict[str, Any]:
         "engaged": True, "revoked": revoked, "slip": slip, "chain": ledger.verify_chain(),
         "notice": "Paused. Already dispatched payments may still complete; their held funds remain reserved.",
     }
+
+
+@app.get("/api/v1/session-keys", dependencies=[Depends(owner)])
+def session_status() -> list[dict[str, str]]:
+    return ledger.session_status()
+
+
+@app.post("/api/v1/session-keys/{key_id}/state", dependencies=[Depends(owner)])
+def change_session_state(key_id: str, body: SessionChange) -> dict[str, str]:
+    return guard(ledger.change_session_state, key_id, body.state)
 
 
 @app.get("/api/v1/purchases/{purchase_id}/evidence", dependencies=[Depends(owner)])
