@@ -181,3 +181,26 @@ export interface LedgerEventDTO {
   prev: string;
   hash: string;
 }
+
+// Controlled seller wire contracts. Prices remain decimal strings plus explicit milli.
+export interface SellerCatalogItemDTO {
+  item: string;
+  label: string;
+  amount: string;
+  amount_milli: Milli;
+  unit: "USD-TDN";
+  synthetic: true;
+  input_schema: Record<string, unknown>;
+}
+
+export interface SellerDeliveryDTO {
+  schema: "mandate.seller-delivery.v1";
+  item: string;
+  request_id: string;
+  rail_order_id: string;
+  amount: string;
+  amount_milli: Milli;
+  created_at: string; // UTC ISO 8601 timestamp; freshness is a separate delivery check.
+  synthetic: true;
+  data: Record<string, unknown>;
+}

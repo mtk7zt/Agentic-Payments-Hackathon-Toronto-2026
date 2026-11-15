@@ -23,7 +23,7 @@ from ..core.sessions import SessionState
 from ..models.money import MoneyError, format_milli, parse_milli
 from ..services import orchestrator
 from ..services.payment_rail import rail_from_env
-from ..services.seller import MockSeller
+from ..services.seller import seller_from_env
 
 DEMO_SELLERS = {
     "seller-a.example": "0x00000000000000000000000000000000000000a1",
@@ -41,7 +41,7 @@ ledger = Ledger(os.environ.get("MANDATE_DB", ":memory:"))
 if not ledger.policy().whitelisted_sellers:
     ledger.set_policy(whitelisted_sellers=DEMO_SELLERS)
 rail = rail_from_env()
-seller = MockSeller()
+seller = seller_from_env()
 
 
 class Strict(BaseModel):

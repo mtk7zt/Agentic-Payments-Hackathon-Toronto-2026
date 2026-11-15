@@ -58,6 +58,13 @@ cd frontend && npm install && npm run dev   # http://localhost:3000
 
 The evidence chain is tamper-evident, not immutable: someone who can rewrite the whole database can rewrite the chain. Detecting that needs a checkpoint stored somewhere else, which is not built yet.
 
+## Controlled synthetic seller
+
+The optional standalone seller API serves two fixed-price synthetic items and
+requires a bearer token. Set `MANDATE_SELLER_MODE=http` in the gateway to use it;
+the default remains the in-process mock. See `docs/CONTROLLED_SELLERS.md` for the
+two-process setup, verification command and payment-proof limitations.
+
 ## Shared money contracts
 
 `frontend/lib/mandate.types.ts` owns the shared TypeScript contracts. Existing
