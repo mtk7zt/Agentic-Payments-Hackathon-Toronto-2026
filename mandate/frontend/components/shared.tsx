@@ -2,7 +2,7 @@
 
 import type { ReactNode } from "react";
 import type { Tone } from "./kit";
-import type { Purchase } from "@/lib/ledger";
+import type { Purchase } from "@/lib/mandate";
 
 export const overlay = "fixed inset-0 z-50 bg-black/75";
 export const sheet = "plate fixed z-50 rounded-lg shadow-[0_30px_90px_rgba(0,0,0,.85)] focus:outline-none";
@@ -18,7 +18,7 @@ export function settlementLine(p: Purchase): { tone: Tone; text: string } {
   if (p.stage === "RESERVED") return { tone: "intent", text: "reserved · claim pending" };
   if (p.stage === "DISPATCHED") return { tone: "intent", text: `claim ${p.idempotencyKey} · awaiting Qatom` };
   if (p.recovery === "OUTCOME_UNKNOWN") return { tone: "warning", text: `unknown · hold retained · ${p.retriesSuppressed} retry suppressed` };
-  return { tone: "success", text: `${p.qatomTx} · ${p.latencyMs} ms` };
+  return { tone: "success", text: p.latencyMs === null ? `${p.qatomTx}` : `${p.qatomTx} · ${p.latencyMs} ms` };
 }
 export function deliveryLine(p: Purchase): { tone: Tone; text: string } {
   if (p.delivery === "VERIFIED") return { tone: "success", text: "verified · schema · freshness · request match" };

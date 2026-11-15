@@ -6,8 +6,8 @@ import { AnimatePresence, motion } from "motion/react";
 import { Badge, stageBadge } from "./kit";
 import type { Tone } from "./kit";
 import { LEDC, TXT, deliveryLine, milli, settlementLine, utc } from "./shared";
-import { CLAUSE_TEXT, entriesFor, fmt, reconcile, short } from "@/lib/ledger";
-import type { Evt, Purchase, State } from "@/lib/ledger";
+import { CLAUSE_TEXT, entriesFor, fmt, reconcile, short } from "@/lib/mandate";
+import type { Evt, Purchase, State } from "@/lib/mandate";
 
 type Filter = "all" | "auto" | "pending" | "blocked";
 const FILTERS: [Filter, string][] = [

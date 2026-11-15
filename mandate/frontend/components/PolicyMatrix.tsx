@@ -4,8 +4,8 @@
 import { useState } from "react";
 import { Minus, Plus } from "lucide-react";
 import { Badge, Ticks } from "./kit";
-import { available, fmt, setPolicy, short } from "@/lib/ledger";
-import type { State } from "@/lib/ledger";
+import { available, fmt, knownVendors, setPolicy, short } from "@/lib/mandate";
+import type { State } from "@/lib/mandate";
 
 function Toggle({ id, checked, onChange, label, hint, disabled }: { id: string; checked: boolean; onChange: (v: boolean) => void; label: string; hint: string; disabled: boolean }) {
   return (
@@ -45,7 +45,7 @@ export function PolicyMatrix({ s }: { s: State }) {
   const locked = p.paused;
   const [adding, setAdding] = useState(false);
   const [draft, setDraft] = useState("");
-  const known = Array.from(new Set(["seller-a", "seller-b", ...p.vendors]));
+  const known = knownVendors(s);
   const toggleVendor = (v: string) => setPolicy({ vendors: p.vendors.includes(v) ? p.vendors.filter((x) => x !== v) : [...p.vendors, v] });
   const add = () => {
     const v = draft.trim().toLowerCase();
