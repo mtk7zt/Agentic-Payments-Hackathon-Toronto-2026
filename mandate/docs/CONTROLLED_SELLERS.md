@@ -61,6 +61,7 @@ correlation reference, not a verified proof of payment. The service does not
 independently inspect a provider receipt. Catalog price binding to a purchase is
 not enforced by this delivery adapter; the caller must propose the exact catalog
 price. Full pre-dispatch argument/price constraints belong to MND-07/MND-10.
-Timestamp presence does not establish freshness; freshness checks belong to MND-12.
+MND-12 validates delivery age and bounded future clock skew; seller timestamps
+are still untrusted declarations rather than independent proofs of freshness.
 Process deployment and secret isolation remain MND-03 work. No live supplier
 selection, automated refunds or real business decisions are supported.

@@ -20,7 +20,7 @@ def _deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> None:
     except Exception as exc:  # noqa: BLE001 - any seller failure after payment must retain settlement
         ledger.record_delivery(purchase_id, False, f"Seller unreachable ({type(exc).__name__})")
         return
-    d = verify_delivery(payload, item=p["item"], request_id=p["id"])
+    d = verify_delivery(payload, item=p["item"], request_id=p["id"], rail_order_id=p["rail_order_id"])
     ledger.record_delivery(purchase_id, d.ok, d.detail)
 
 

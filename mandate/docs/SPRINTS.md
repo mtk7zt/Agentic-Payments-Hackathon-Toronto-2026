@@ -22,7 +22,7 @@ MND-03 (isolated executor and repository baseline) was not named in the sprint b
 | MND-08 atomic allocations | Atomic reservations plus owner-recorded wallet monitoring implemented locally; review pending; no live balance verification |
 | MND-09 dispatch claims | Crash/reopen and concurrent claim/settlement proofs added locally; review pending |
 | MND-11 unknown-outcome reconciliation | `orchestrator.reconcile`, tested on the mock rail |
-| MND-12 delivery validation | Schema and request-match checks; freshness not yet |
+| MND-12 delivery validation | Complete JSON/UTF-8 bounds, request/order correlation and timestamp age checks implemented locally; review pending |
 | MND-13 hash-linked evidence | Chain and verifier done; external checkpoint not yet |
 | MND-14 kill-switch | Done, tested |
 | MND-15, 16, 18, 19, 20 UI | Built against the simulated ledger; not yet wired to the API |
