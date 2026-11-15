@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 from dataclasses import asdict, dataclass, field
 from enum import Enum
+from typing import Any
 
 
 class Decision(str, Enum):
@@ -30,6 +32,8 @@ class Clause(str, Enum):
     INSUFFICIENT_ALLOCATION = "INSUFFICIENT_ALLOCATION"
     AGENT_FROZEN = "AGENT_FROZEN"
     SESSION_KEY_INVALID = "SESSION_KEY_INVALID"
+    POLICY_EXPIRED = "POLICY_EXPIRED"
+    ARGUMENT_CONSTRAINT_VIOLATION = "ARGUMENT_CONSTRAINT_VIOLATION"
 
 
 CLAUSE_TEXT: dict[Clause, str] = {
@@ -42,6 +46,8 @@ CLAUSE_TEXT: dict[Clause, str] = {
     Clause.ATTEMPT_CEILING_REACHED: "This task has used all of its allowed paid attempts.",
     Clause.INSUFFICIENT_ALLOCATION: "Not enough of the task budget is left once held amounts are set aside.",
     Clause.AGENT_FROZEN: "The kill-switch is engaged. No purchase may be dispatched.",
+    Clause.POLICY_EXPIRED: "The mandate has expired. No purchase may be authorized.",
+    Clause.ARGUMENT_CONSTRAINT_VIOLATION: "The tool arguments do not match this mandate's required values.",
     Clause.SESSION_KEY_INVALID: "The agent's session key is missing, frozen or revoked.",
 }
 
@@ -60,6 +66,15 @@ class Policy:
     # seller domain -> payment address on file (lower-case)
     whitelisted_sellers: dict[str, str] = field(default_factory=dict)
 
+    # Unix seconds; None preserves mandates without a time limit.
+    expires_at: float | None = None
+    # Required top-level tool argument keys with exact JSON values.
+    argument_constraints: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if self.expires_at is not None and not _finite_timestamp(self.expires_at):
+            raise ValueError("policy.expires_at must be finite Unix seconds or None")
+
     def canonical(self) -> str:
         return json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
 
@@ -74,6 +89,7 @@ class Intent:
     item: str
     amount: int
     attempt: int = 1
+    arguments: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -85,8 +101,37 @@ class Evaluation:
     policy_hash: str
 
 
-def evaluate(intent: Intent, policy: Policy, available: int) -> Evaluation:
-    """Hard constraints first; order is part of the contract and is tested."""
+def _finite_timestamp(value: Any) -> bool:
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    try:
+        return math.isfinite(value)
+    except OverflowError:
+        return False
+
+
+def _arguments_match(arguments: Any, constraints: dict[str, Any]) -> bool:
+    if not constraints:
+        return True
+    if not isinstance(arguments, dict):
+        return False
+    try:
+        # JSON comparison distinguishes booleans, integers, strings and floats;
+        # nested object order is immaterial, while array order is significant.
+        return all(key in arguments and
+                   json.dumps(arguments[key], sort_keys=True, allow_nan=False) ==
+                   json.dumps(value, sort_keys=True, allow_nan=False)
+                   for key, value in constraints.items())
+    except (TypeError, ValueError):
+        return False
+
+
+def evaluate(intent: Intent, policy: Policy, available: int, *, now: float | None = None) -> Evaluation:
+    """Hard constraints first; no model text or implicit clock influences the result.
+
+    An expiring policy requires explicit finite ``now`` in Unix seconds. The
+    expiry boundary is exclusive: at expires_at the authority is already gone.
+    """
 
     def out(decision: Decision, clause: Clause) -> Evaluation:
         return Evaluation(decision, clause, CLAUSE_TEXT[clause], policy.version, policy.hash())
@@ -94,12 +139,19 @@ def evaluate(intent: Intent, policy: Policy, available: int) -> Evaluation:
     if isinstance(intent.amount, bool) or not isinstance(intent.amount, int) or intent.amount <= 0:
         raise ValueError("intent.amount must be a positive int (thousandths)")
 
+    if isinstance(intent.attempt, bool) or not isinstance(intent.attempt, int) or intent.attempt <= 0:
+        raise ValueError("intent.attempt must be a positive int")
+    if policy.expires_at is not None and not _finite_timestamp(now):
+        raise ValueError("now must be explicit finite Unix seconds for an expiring policy")
+
     domain = intent.seller_domain.strip().lower()
     address = intent.seller_address.strip().lower()
     on_file = policy.whitelisted_sellers.get(domain)
 
     if policy.paused:
         return out(Decision.BLOCKED, Clause.AGENT_FROZEN)
+    if policy.expires_at is not None and now >= policy.expires_at:
+        return out(Decision.BLOCKED, Clause.POLICY_EXPIRED)
     if on_file is not None and on_file != address:
         # A listed name with a different address is a redirect, never a review.
         return out(Decision.BLOCKED, Clause.VENDOR_ADDRESS_MISMATCH)
@@ -111,6 +163,8 @@ def evaluate(intent: Intent, policy: Policy, available: int) -> Evaluation:
         return out(Decision.BLOCKED, Clause.ABOVE_TRANSACTION_CEILING)
     if intent.amount > available:
         return out(Decision.BLOCKED, Clause.INSUFFICIENT_ALLOCATION)
+    if not _arguments_match(intent.arguments, policy.argument_constraints):
+        return out(Decision.BLOCKED, Clause.ARGUMENT_CONSTRAINT_VIOLATION)
     if on_file is None:
         return out(Decision.HELD_FOR_REVIEW, Clause.VENDOR_UNLISTED_NEEDS_REVIEW)
     if intent.amount > policy.max_single_spend:

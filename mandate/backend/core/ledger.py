@@ -294,6 +294,21 @@ class Ledger:
                        detail=f"{saved_tool.get('tool', 'tool')} -> {envelope['seller_domain']}")
             return dict(self._purchase(pid)), True
 
+    def _evaluate_purchase(self, purchase: sqlite3.Row, policy: Policy, available: int) -> Evaluation:
+        tool_call = json.loads(purchase["tool_call_json"])
+        arguments = tool_call.get("arguments")
+        intent = Intent(purchase["seller_domain"], purchase["seller_address"], purchase["item"],
+                        purchase["amount"], purchase["attempt"], arguments)
+        return evaluate(intent, policy, available, now=time.time())
+
+    def _recheck_reserved_policy(self, purchase: sqlite3.Row, *, require_approval: bool = False) -> None:
+        # This purchase already holds its allocation; count it back exactly once.
+        result = self._evaluate_purchase(purchase, self.policy(), self.balances()["available"] + purchase["amount"])
+        if result.decision is Decision.BLOCKED:
+            raise LedgerError(f"{result.clause.value}: {result.reason}")
+        if require_approval and result.decision is Decision.HELD_FOR_REVIEW and not purchase["approved_by_human"]:
+            raise LedgerError(f"{result.clause.value}: approval required under current policy")
+
     def evaluate_and_reserve(self, purchase_id: str, approval_window_s: int = 900) -> Evaluation:
         """Policy check and, if it passes, the hold. One transaction."""
         with self._tx():
@@ -301,8 +316,7 @@ class Ledger:
             if p["stage"] != Stage.PROPOSED.value:
                 raise LedgerError("already evaluated")
             pol = self.policy()
-            ev = evaluate(Intent(p["seller_domain"], p["seller_address"], p["item"], p["amount"], p["attempt"]),
-                          pol, self.balances()["available"])
+            ev = self._evaluate_purchase(p, pol, self.balances()["available"])
             base = {"decision": ev.decision.value, "clause": ev.clause.value,
                     "policy_version": ev.policy_version, "policy_hash": ev.policy_hash}
             self._emit("POLICY_EVALUATED", "gateway", purchase_id=purchase_id, amount=p["amount"],
@@ -342,6 +356,7 @@ class Ledger:
                 raise LedgerError("kill-switch engaged")
             if (p["expires_at"] or 0) <= time.time():
                 raise LedgerError("approval window closed")
+            self._recheck_reserved_policy(p)
             self._stage(purchase_id, Stage.RESERVED, approved_by_human=1)
             self._emit("APPROVAL_GRANTED", "approver", purchase_id=purchase_id, amount=p["amount"],
                        detail="Authorized for this exact seller, item and amount")
@@ -365,6 +380,7 @@ class Ledger:
                 raise LedgerError("not reserved")
             if self.policy().paused:
                 raise LedgerError("kill-switch engaged")
+            self._recheck_reserved_policy(p, require_approval=True)
             key = f"mnd-{p['fingerprint'][:8]}-{p['id']}"
             try:
                 self.conn.execute(
