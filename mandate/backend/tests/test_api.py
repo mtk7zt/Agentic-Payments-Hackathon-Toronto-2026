@@ -1,8 +1,17 @@
+import secrets
+
+import pytest
 from fastapi.testclient import TestClient
 
 from backend.api.main import app
 
-c = TestClient(app)
+OWNER_TOKEN = secrets.token_urlsafe(32)
+c = TestClient(app, headers={"X-Owner-Token": OWNER_TOKEN})
+
+
+@pytest.fixture(autouse=True)
+def configured_owner(monkeypatch):
+    monkeypatch.setenv("MANDATE_OWNER_TOKEN", OWNER_TOKEN)
 
 
 def key():

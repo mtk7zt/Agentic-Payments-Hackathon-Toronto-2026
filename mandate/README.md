@@ -84,14 +84,19 @@ are explicitly integer units. GOAT `amount_wei` is an integer string in token
 base units: for a six-decimal token, `40` milli becomes `"40000"`. Keep provider
 base units as strings in JavaScript, since they can exceed its safe integer range.
 
-The current request fingerprint hashes canonical JSON containing the lowercased
-seller domain and address, item, and integer amount. It does not bind tool-call
-arguments. Mock and live rails share the backend purchase contract, while a
+New request fingerprints bind the mandate, agent, normalized seller domain and
+address, item, integer amount and complete tool-call arguments. Legacy records
+replay against their stored envelope without rewriting dispatch claims.
+Mock and live rails share the backend purchase contract, while a
 pending live order remains `DISPATCHED` until payment confirmation. Reason-code
 unions in the shared types distinguish this backend contract from the simulator.
 
 Verify the money boundaries and exact reservation/settlement lifecycle with
 `python -m pytest backend/tests/test_money_contract.py` from this directory.
+
+The bounded buyer loop exposes discovery, proposal and status tools only, with
+explicit step, time and new-request limits. See `docs/AGENT_LOOP.md` for its model
+callback interface, owner authentication and timeout/replay semantics.
 
 ## Payment rail
 
@@ -105,5 +110,5 @@ Known gaps, stated plainly:
 - **Order creation is not payment.** `POST /api/v1/orders` opens an order and returns payment terms. The payer-side authorization that actually moves USDC is not implemented, so a live order stays `DISPATCHED` until it is paid some other way and `reconcile` sees `PAYMENT_CONFIRMED`.
 - **Qatom.** No Qatom contract is assumed anywhere. It plugs in as another `PaymentRail` once its API is confirmed.
 - **The cockpit is not wired to the backend yet.** It runs on `frontend/lib/ledger.ts`, a simulated ledger that mirrors the backend's rules. `frontend/lib/api.ts` is the seam for connecting them.
-- **Owner auth is a single shared token** (`MANDATE_OWNER_TOKEN`). With it unset the API is open, for local demos only.
+- **Owner auth is a single shared token** (`MANDATE_OWNER_TOKEN`). Owner routes deny all requests when it is unset. Configure it before issuing agent sessions or using owner state, evidence, approvals or event-stream endpoints.
 - Not affiliated with Y Combinator, GOAT Network or Qatom.

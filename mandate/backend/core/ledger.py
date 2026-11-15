@@ -249,13 +249,33 @@ class Ledger:
             validate_milli(intent.amount, positive=True)
         except MoneyError as exc:
             raise LedgerError(str(exc)) from exc
+        try:
+            if not isinstance(tool_call, dict):
+                raise TypeError("not an object")
+            tool_json = json.dumps(tool_call, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False)
+        except (TypeError, ValueError) as exc:
+            raise LedgerError("tool_call must be a JSON object") from exc
+        saved_tool = json.loads(tool_json)
+        envelope = {
+            "seller_domain": intent.seller_domain.strip().lower(),
+            "seller_address": intent.seller_address.strip().lower(),
+            "item": intent.item, "amount": intent.amount, "tool_call": saved_tool,
+        }
         fingerprint = hashlib.sha256(canonical({
-            "seller_domain": intent.seller_domain.lower(), "seller_address": intent.seller_address.lower(),
-            "item": intent.item, "amount": intent.amount}).encode()).hexdigest()
+            "version": 2, "mandate_id": self.mandate_id, "agent_id": self.agent_id, **envelope,
+        }).encode()).hexdigest()
         with self._tx():
             prior = self.conn.execute("SELECT * FROM purchases WHERE request_key=?", (request_key,)).fetchone()
             if prior:
-                if prior["fingerprint"] != fingerprint:
+                # Compare stored envelopes so pre-v2 purchases retain their original
+                # fingerprint and dispatch claim, while changed arguments still fail.
+                prior_envelope = {
+                    "seller_domain": prior["seller_domain"].strip().lower(),
+                    "seller_address": prior["seller_address"].strip().lower(),
+                    "item": prior["item"], "amount": prior["amount"],
+                    "tool_call": json.loads(prior["tool_call_json"]),
+                }
+                if prior["mandate_id"] != self.mandate_id or canonical(prior_envelope) != canonical(envelope):
                     raise LedgerError("request_key reused with a different purchase")
                 return dict(prior), False
             n = self.conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0] + 1
@@ -267,11 +287,11 @@ class Ledger:
             self.conn.execute(
                 "INSERT INTO purchases(id,mandate_id,request_key,fingerprint,seller_domain,seller_address,item,amount,"
                 "attempt,tool_call_json,stage,session_key_id,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-                (pid, self.mandate_id, request_key, fingerprint, intent.seller_domain.lower(),
-                 intent.seller_address.lower(), intent.item, intent.amount, attempt, canonical(tool_call),
+                (pid, self.mandate_id, request_key, fingerprint, envelope["seller_domain"],
+                 envelope["seller_address"], intent.item, intent.amount, attempt, tool_json,
                  Stage.PROPOSED.value, session_key_id, now, now))
             self._emit("INTENT_PROPOSED", "agent", purchase_id=pid, amount=intent.amount, ref=session_key_id,
-                       detail=f"{tool_call.get('tool', 'tool')} -> {intent.seller_domain}")
+                       detail=f"{saved_tool.get('tool', 'tool')} -> {envelope['seller_domain']}")
             return dict(self._purchase(pid)), True
 
     def evaluate_and_reserve(self, purchase_id: str, approval_window_s: int = 900) -> Evaluation:

@@ -8,6 +8,7 @@ from urllib.parse import quote
 
 import httpx
 
+from ..models.catalog import catalog_items
 from ..models.money import parse_milli, validate_milli
 
 
@@ -18,6 +19,7 @@ class Delivery:
 
 
 class Seller(Protocol):
+    def catalog(self) -> list[dict[str, Any]]: ...
     def fetch(self, *, item: str, rail_order_id: str, request_id: str) -> dict[str, Any]: ...
 
 
@@ -37,6 +39,9 @@ def verify_delivery(payload: dict[str, Any] | None, *, item: str, request_id: st
 class MockSeller:
     def __init__(self, fail_items: set[str] | None = None):
         self.fail_items = fail_items or set()
+
+    def catalog(self) -> list[dict[str, Any]]:
+        return catalog_items()
 
     def fetch(self, *, item: str, rail_order_id: str, request_id: str) -> dict[str, Any]:
         if item in self.fail_items:

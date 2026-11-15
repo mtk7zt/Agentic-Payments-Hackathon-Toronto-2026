@@ -2,14 +2,15 @@
 
     uvicorn backend.api.main:app --reload
 
-Agent routes take X-Session-Key. Owner routes take X-Owner-Token when
-MANDATE_OWNER_TOKEN is set; with it unset the API runs open, for local demos only.
+Agent routes take X-Session-Key. Owner routes require X-Owner-Token;
+they fail closed when MANDATE_OWNER_TOKEN is unset.
 """
 from __future__ import annotations
 
 import asyncio
 import json
 import os
+import secrets
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
@@ -21,6 +22,7 @@ from ..core.ledger import Ledger, LedgerError
 from ..core.policy import Intent
 from ..core.sessions import SessionState
 from ..models.money import MoneyError, format_milli, parse_milli
+from ..models.purchase import PurchaseIn
 from ..services import orchestrator
 from ..services.payment_rail import rail_from_env
 from ..services.seller import seller_from_env
@@ -48,15 +50,6 @@ class Strict(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
 
-class PurchaseIn(Strict):
-    request_key: str = Field(min_length=8, max_length=128)
-    seller_domain: str = Field(min_length=1, max_length=253)
-    seller_address: str = Field(min_length=1, max_length=128)
-    item: str = Field(min_length=1, max_length=128)
-    amount: str = Field(description="Decimal string in USD-TDN, at most 3 decimals, e.g. '0.040'")
-    tool_call: dict[str, Any] = Field(default_factory=dict)
-
-
 class PolicyPatch(Strict):
     max_single_spend: str | None = None
     strict_whitelist: bool | None = None
@@ -70,8 +63,15 @@ class KillSwitch(Strict):
 
 def owner(x_owner_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("MANDATE_OWNER_TOKEN")
-    if expected and x_owner_token != expected:
+    if not expected or not x_owner_token or not secrets.compare_digest(x_owner_token.encode(), expected.encode()):
         raise HTTPException(403, "owner token required")
+
+
+def active_agent(x_session_key: str | None = Header(default=None)) -> str:
+    resolved = ledger.sessions.resolve(x_session_key) if x_session_key else None
+    if not resolved or resolved[1] is not SessionState.ACTIVE:
+        raise HTTPException(401, "session key missing, frozen or revoked")
+    return resolved[0]
 
 
 def view(p: dict[str, Any]) -> dict[str, Any]:
@@ -94,7 +94,7 @@ def health() -> dict[str, str]:
     return {"status": "ok", "rail": rail.name}
 
 
-@app.get("/api/v1/state")
+@app.get("/api/v1/state", dependencies=[Depends(owner)])
 def state() -> dict[str, Any]:
     pol = ledger.policy()
     return {
@@ -105,11 +105,8 @@ def state() -> dict[str, Any]:
 
 
 @app.post("/api/v1/purchases", status_code=201)
-def propose(body: PurchaseIn, x_session_key: str | None = Header(default=None)) -> dict[str, Any]:
+def propose(body: PurchaseIn, session_key_id: str = Depends(active_agent)) -> dict[str, Any]:
     """Agent route. The agent can only propose; it never reaches the rail directly."""
-    resolved = ledger.sessions.resolve(x_session_key) if x_session_key else None
-    if not resolved or resolved[1] is not SessionState.ACTIVE:
-        raise HTTPException(401, "session key missing, frozen or revoked")
     try:
         amount = parse_milli(body.amount)
     except MoneyError as exc:
@@ -118,7 +115,26 @@ def propose(body: PurchaseIn, x_session_key: str | None = Header(default=None)) 
         raise HTTPException(422, "amount must be greater than zero")
     intent = Intent(body.seller_domain, body.seller_address, body.item, amount)
     return view(guard(orchestrator.submit, ledger, rail, seller, request_key=body.request_key, intent=intent,
-                      tool_call=body.tool_call, session_key_id=resolved[0]))
+                      tool_call=body.tool_call, session_key_id=session_key_id))
+
+
+@app.get("/api/v1/catalog", dependencies=[Depends(active_agent)])
+def discover() -> dict[str, Any]:
+    return {
+        "mandate_id": ledger.mandate_id, "rail": rail.name, "unit": "USD-TDN",
+        "sellers": ledger.policy().whitelisted_sellers, "items": seller.catalog(),
+    }
+
+
+@app.get("/api/v1/purchases/{purchase_id}", dependencies=[Depends(active_agent)])
+def purchase_status(purchase_id: str) -> dict[str, Any]:
+    try:
+        purchase = ledger.purchase(purchase_id)
+    except LedgerError as exc:
+        raise HTTPException(404, "purchase not found") from exc
+    if purchase["mandate_id"] != ledger.mandate_id:
+        raise HTTPException(404, "purchase not found")
+    return view(purchase)
 
 
 @app.post("/api/v1/purchases/{purchase_id}/approve", dependencies=[Depends(owner)])
@@ -170,7 +186,7 @@ def kill_switch(body: KillSwitch) -> dict[str, Any]:
     return {"engaged": True, "revoked": revoked, "slip": slip, "chain": ledger.verify_chain()}
 
 
-@app.get("/api/v1/purchases/{purchase_id}/evidence")
+@app.get("/api/v1/purchases/{purchase_id}/evidence", dependencies=[Depends(owner)])
 def evidence(purchase_id: str) -> dict[str, Any]:
     p = guard(ledger.purchase, purchase_id)
     return {"schema": "mandate.evidence.v1", "purchase": view(p),
@@ -178,12 +194,12 @@ def evidence(purchase_id: str) -> dict[str, Any]:
             "chain": ledger.verify_chain(), "redactions": ["credentials", "approval links", "session tokens"]}
 
 
-@app.get("/api/v1/evidence/verify")
+@app.get("/api/v1/evidence/verify", dependencies=[Depends(owner)])
 def verify() -> dict[str, Any]:
     return ledger.verify_chain()
 
 
-@app.get("/api/v1/stream")
+@app.get("/api/v1/stream", dependencies=[Depends(owner)])
 async def stream(request: Request, last_event_id: str | None = Header(default=None)) -> StreamingResponse:
     """Server-sent events, one per ledger event. Resumes from Last-Event-ID; read-only."""
     cursor = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0

@@ -17,13 +17,8 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..models.catalog import CATALOG, catalog_items
 from ..models.money import format_milli
-
-# Fixed demo prices are milli, never floats. All suppliers and results are synthetic.
-CATALOG = {
-    "shipping-estimate": ("Synthetic shipping estimate", 40),
-    "supplier-summary": ("Synthetic supplier summary", 60),
-}
 
 
 class FulfillmentIn(BaseModel):
@@ -52,13 +47,7 @@ def create_app(*, token: str | None = None) -> FastAPI:
 
     @app.get("/api/v1/catalog")
     def catalog() -> dict[str, Any]:
-        return {"items": [
-            {
-                "item": item, "label": label, "amount": format_milli(amount), "amount_milli": amount,
-                "unit": "USD-TDN", "synthetic": True, "input_schema": FulfillmentIn.model_json_schema(),
-            }
-            for item, (label, amount) in CATALOG.items()
-        ]}
+        return {"items": catalog_items(FulfillmentIn.model_json_schema())}
 
     @app.post("/api/v1/items/{item}/fulfill")
     def fulfill(item: str, body: FulfillmentIn) -> dict[str, Any]:

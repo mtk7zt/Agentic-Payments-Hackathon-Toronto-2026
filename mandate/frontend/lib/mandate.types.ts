@@ -204,3 +204,16 @@ export interface SellerDeliveryDTO {
   synthetic: true;
   data: Record<string, unknown>;
 }
+
+export interface AgentDiscoveryDTO {
+  mandate_id: string;
+  rail: string;
+  unit: "USD-TDN";
+  sellers: Record<string, string>;
+  items: SellerCatalogItemDTO[];
+}
+
+export type AgentAction =
+  | { tool: "discover"; arguments?: Record<string, never> }
+  | { tool: "propose"; arguments: PurchaseRequestDTO }
+  | { tool: "status"; arguments: { purchase_id: string } };
