@@ -69,7 +69,7 @@ class GoatFlowConfig:
     timeout_s: float = 10.0
 
     @classmethod
-    def from_env(cls) -> "GoatFlowConfig":
+    def from_env(cls) -> GoatFlowConfig:
         e = os.environ.get
         return cls(
             api_url=e("GOAT_FLOW_API_URL", cls.api_url).rstrip("/"), api_key=e("GOAT_FLOW_API_KEY", ""),

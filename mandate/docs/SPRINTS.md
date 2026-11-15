@@ -17,10 +17,10 @@ MND-03 (isolated executor and repository baseline) was not named in the sprint b
 | --- | --- |
 | MND-02 money types | Done in `backend/models/money.py`, tested |
 | MND-04 rail adapter | GOAT Flow and mock adapters written; live call not yet made |
-| MND-06 idempotent intents | `Ledger.propose` request keys, tested |
-| MND-07 policy evaluator | Done, tested |
-| MND-08 atomic allocations | Done, concurrency-tested |
-| MND-09 dispatch claims | Done, tested |
+| MND-06 idempotent intents | Full argument binding, fail-closed owner auth and bounded model-callback runner implemented locally; review pending |
+| MND-07 policy evaluator | Expiry, argument constraints and approval/dispatch rechecks implemented locally; review pending |
+| MND-08 atomic allocations | Atomic reservations plus owner-recorded wallet monitoring implemented locally; review pending; no live balance verification |
+| MND-09 dispatch claims | Crash/reopen and concurrent claim/settlement proofs added locally; review pending |
 | MND-11 unknown-outcome reconciliation | `orchestrator.reconcile`, tested on the mock rail |
 | MND-12 delivery validation | Schema and request-match checks; freshness not yet |
 | MND-13 hash-linked evidence | Chain and verifier done; external checkpoint not yet |

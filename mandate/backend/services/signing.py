@@ -16,7 +16,7 @@ import hashlib
 import hmac
 import time
 import uuid
-from typing import Mapping
+from collections.abc import Mapping
 
 Scalar = str | int | bool
 

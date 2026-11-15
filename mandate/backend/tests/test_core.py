@@ -7,9 +7,19 @@ import pytest
 
 from backend.core.ledger import Ledger, LedgerError, Stage
 from backend.core.policy import Clause, Decision, Intent, Policy, evaluate
-from backend.models.money import MoneyError, format_milli, milli_to_token_units, parse_milli
+from backend.models.money import (
+    MoneyError,
+    format_milli,
+    milli_to_token_units,
+    parse_milli,
+)
 from backend.services import orchestrator
-from backend.services.payment_rail import GoatFlowConfig, GoatFlowRail, MockRail, RailOutcome
+from backend.services.payment_rail import (
+    GoatFlowConfig,
+    GoatFlowRail,
+    MockRail,
+    RailOutcome,
+)
 from backend.services.seller import MockSeller
 from backend.services.signing import sign, signing_string
 
@@ -68,7 +78,7 @@ def make(**kw):
 
 
 def test_concurrent_reservations_cannot_overspend():
-    led, key = make(task_budget_cap=100, max_single_spend=100)
+    led, _key = make(task_budget_cap=100, max_single_spend=100)
     ids = [led.propose(request_key=f"req-{i}-xxxx", intent=intent(80), tool_call={})[0]["id"] for i in range(2)]
     threads = [threading.Thread(target=led.evaluate_and_reserve, args=(i,)) for i in ids]
     [t.start() for t in threads]
@@ -80,7 +90,7 @@ def test_concurrent_reservations_cannot_overspend():
 
 
 def test_request_key_is_idempotent():
-    led, key = make()
+    led, _key = make()
     a, created = led.propose(request_key="same-key-1", intent=intent(40), tool_call={})
     b, again = led.propose(request_key="same-key-1", intent=intent(40), tool_call={})
     assert created and not again and a["id"] == b["id"]
@@ -89,7 +99,7 @@ def test_request_key_is_idempotent():
 
 
 def test_timeout_keeps_hold_and_forbids_second_order():
-    led, key = make()
+    led, _key = make()
     rail = MockRail({"pur_0001": RailOutcome.UNKNOWN})
     p = orchestrator.submit(led, rail, MockSeller(), request_key="timeout-key", intent=intent(80), tool_call={})
     assert p["stage"] == Stage.RECOVERY_UNKNOWN.value and led.balances()["held"] == 80
@@ -105,7 +115,7 @@ def test_timeout_keeps_hold_and_forbids_second_order():
 
 
 def test_payment_and_delivery_are_separate():
-    led, key = make()
+    led, _key = make()
     seller = MockSeller(fail_items={"item"})
     p = orchestrator.submit(led, MockRail(), seller, request_key="deliver-key", intent=intent(60), tool_call={})
     assert p["stage"] == Stage.RECOVERY_UNDELIVERED.value and p["delivery"] == "FAILED"
@@ -137,7 +147,7 @@ def test_kill_switch_revokes_keys_and_stops_dispatch():
 
 
 def test_evidence_chain_is_append_only_and_tamper_evident():
-    led, key = make()
+    led, _key = make()
     orchestrator.submit(led, MockRail(), MockSeller(), request_key="chain-key1", intent=intent(40), tool_call={})
     assert led.verify_chain()["intact"]
     with pytest.raises(sqlite3.DatabaseError):
@@ -152,7 +162,7 @@ def test_evidence_chain_is_append_only_and_tamper_evident():
 
 
 def test_failed_transaction_rolls_back_completely():
-    led, key = make()
+    led, _key = make()
     before = (led.balances(), len(led.events()))
     with pytest.raises(LedgerError):
         led.set_policy(task_budget_cap=-1)

@@ -54,9 +54,10 @@ multi-mandate wallet coordination. Unreported external movements cannot be
 detected. Use one dedicated wallet per ledger and obtain a new current snapshot
 after resolving outstanding payments. Reconciliation authorizes a new baseline;
 it does not move money or change ledger settlements. Monitoring cannot be
-turned off through these routes once configured. This branch retains the base
-owner-auth behavior: set MANDATE_OWNER_TOKEN; without it the base gateway remains
-open for local demos. Production owner-auth hardening is a separate dependency.
+turned off through these routes once configured. MND-06 supplies the required
+fail-closed owner authentication: set MANDATE_OWNER_TOKEN before using these
+routes. The local integration branch includes that dependency; the isolated
+wallet branch must not be deployed without it.
 
 Verify with `python -m pytest backend/tests/test_wallet_allocations.py
 backend/tests/test_wallet_api.py` from the mandate directory.

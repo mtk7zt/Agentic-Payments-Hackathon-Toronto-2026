@@ -15,12 +15,17 @@ import sys
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
-from backend.core.ledger import Ledger  # noqa: E402
-from backend.core.policy import Intent  # noqa: E402
-from backend.models.money import format_milli  # noqa: E402
-from backend.services import orchestrator  # noqa: E402
-from backend.services.payment_rail import GoatFlowConfig, GoatFlowRail, MockRail, RailOutcome  # noqa: E402
-from backend.services.seller import MockSeller  # noqa: E402
+from backend.core.ledger import Ledger, LedgerError
+from backend.core.policy import Intent
+from backend.models.money import format_milli
+from backend.services import orchestrator
+from backend.services.payment_rail import (
+    GoatFlowConfig,
+    GoatFlowRail,
+    MockRail,
+    RailOutcome,
+)
+from backend.services.seller import MockSeller
 
 A = ("seller-a.example", "0x00000000000000000000000000000000000000a1")
 B = ("seller-b.example", "0x00000000000000000000000000000000000000b2")
@@ -67,7 +72,7 @@ def main() -> int:
             orchestrator.execute(ledger, rail, seller, cases[4][1]["id"])  # a blind retry must be refused
             ok = False
             print("FAIL  retry after timeout was allowed")
-        except Exception as exc:
+        except LedgerError as exc:
             print(f"PASS  retry after timeout refused       ({exc}); rail calls unchanged: {rail.create_calls == calls_before}")
             ok &= rail.create_calls == calls_before
 

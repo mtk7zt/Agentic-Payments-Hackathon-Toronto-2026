@@ -19,7 +19,7 @@ backend/
   services/seller.py       delivery check, separate from payment
   services/orchestrator.py propose -> reserve -> claim -> rail -> settle -> deliver
   api/main.py              FastAPI routes and the SSE event stream
-  tests/                   28 tests
+  tests/                   unit, integration and crash/recovery checks
 frontend/                  Next.js 14 (App Router) + Tailwind
   app/page.tsx             /        landing page with the live attack stream
   app/console/page.tsx     /console operator cockpit
@@ -36,7 +36,7 @@ docs/SPRINTS.md            sprint plan
 # backend
 python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
-python -m pytest                      # 28 tests
+python -m pytest                      # backend regression suite
 python scripts/smoke.py               # mock rail, five scenarios, prints a receipt
 uvicorn backend.api.main:app --reload # http://localhost:8000/docs
 
