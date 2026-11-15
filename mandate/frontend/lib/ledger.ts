@@ -12,36 +12,20 @@
  */
 import { useSyncExternalStore } from "react";
 import { sha256, sha256WebCrypto } from "./sha256";
+import type {
+  Milli, Stage, Decision, Clause, Policy, ScenarioKey, Purchase,
+  EvtBody, Evt, State, TxResult, Verification,
+} from "./mandate.types";
+export type {
+  Milli, Stage, Decision, Clause, Policy, ScenarioKey, Purchase, Claim,
+  EvtType, EvtBody, Evt, State, TxResult, Verification,
+} from "./mandate.types";
 
-export type Milli = number;
 export const BUDGET: Milli = 5000;
 export const WALLET_START: Milli = 12000;
 export const APPROVAL_MS = 15 * 60 * 1000;
 export const GENESIS = "0".repeat(64);
 const STORE_KEY = "mandate.ledger.v3";
-
-export type Stage =
-  | "PROPOSED"
-  | "PENDING_APPROVAL"
-  | "RESERVED"
-  | "DISPATCHED"
-  | "SETTLED" // payment settled, delivery not yet verified
-  | "VERIFIED" // payment settled and delivery verified
-  | "BLOCKED"
-  | "REJECTED"
-  | "EXPIRED"
-  | "RECOVERY";
-
-export type Decision = "AUTO_APPROVED" | "HELD_FOR_REVIEW" | "BLOCKED";
-export type Clause =
-  | "WITHIN_AUTO_APPROVE_LIMIT"
-  | "ABOVE_AUTO_APPROVE_LIMIT"
-  | "VENDOR_NOT_WHITELISTED"
-  | "VENDOR_UNLISTED_NEEDS_REVIEW"
-  | "ABOVE_TRANSACTION_CEILING"
-  | "RETRY_CEILING_REACHED"
-  | "INSUFFICIENT_ALLOCATION"
-  | "AGENT_FROZEN";
 
 export const CLAUSE_TEXT: Record<Clause, string> = {
   WITHIN_AUTO_APPROVE_LIMIT: "Amount is within the auto-approve limit and the vendor is whitelisted.",
@@ -53,108 +37,6 @@ export const CLAUSE_TEXT: Record<Clause, string> = {
   INSUFFICIENT_ALLOCATION: "Not enough allocation is left once held amounts are set aside.",
   AGENT_FROZEN: "The kill-switch is on. The agent's session keys are frozen.",
 };
-
-export interface Policy {
-  version: number;
-  autoApprove: Milli;
-  txCeiling: Milli;
-  strict: boolean;
-  vendors: string[];
-  maxRetries: number;
-  paused: boolean;
-}
-
-export type ScenarioKey = "micro" | "escalation" | "injection" | "sellerFail" | "timeout";
-
-export interface Purchase {
-  id: string;
-  scenario: ScenarioKey;
-  vendor: string;
-  item: string;
-  itemLabel: string;
-  amount: Milli;
-  toolCall: { tool: string; arguments: Record<string, string> };
-  rationale: string;
-  injected: string | null;
-  attempt: number;
-  idempotencyKey: string;
-  stage: Stage;
-  decision: Decision | null;
-  clause: Clause | null;
-  policyVersion: number | null;
-  policyHash: string | null;
-  risk: number | null;
-  expiresAt: number | null;
-  approvedByHuman: boolean;
-  qatomTx: string | null;
-  latencyMs: number | null;
-  delivery: "NONE" | "PENDING" | "VERIFIED" | "FAILED";
-  recovery: "DELIVERY_FAILED" | "OUTCOME_UNKNOWN" | null;
-  retriesSuppressed: number;
-  revokedKey: string | null;
-  walletBefore: Milli;
-  createdAt: number;
-}
-
-export interface Claim {
-  key: string;
-  purchaseId: string;
-  state: "CLAIMED" | "SETTLED" | "UNKNOWN";
-}
-
-export type EvtType =
-  | "POLICY_SNAPSHOT"
-  | "INTENT_PROPOSED"
-  | "POLICY_EVALUATED"
-  | "BUDGET_RESERVED"
-  | "APPROVAL_REQUESTED"
-  | "APPROVAL_GRANTED"
-  | "APPROVAL_REJECTED"
-  | "APPROVAL_EXPIRED"
-  | "HOLD_RELEASED"
-  | "DISPATCH_CLAIMED"
-  | "PAYMENT_SETTLED"
-  | "DUPLICATE_CALLBACK_IGNORED"
-  | "DELIVERY_VERIFIED"
-  | "DELIVERY_FAILED"
-  | "DELIVERY_RECOVERED"
-  | "OUTCOME_UNKNOWN"
-  | "RETRY_SUPPRESSED"
-  | "PURCHASE_BLOCKED"
-  | "SESSION_KEY_REVOKED"
-  | "SESSION_KEY_ISSUED"
-  | "AGENT_FROZEN"
-  | "AGENT_RESUMED";
-
-export interface EvtBody {
-  seq: number;
-  ts: number;
-  type: EvtType;
-  actor: "agent" | "gateway" | "owner" | "approver" | "executor" | "seller";
-  purchaseId: string | null;
-  amount: Milli | null;
-  clause: Clause | null;
-  ref: string | null;
-  detail: string;
-  policyHash: string;
-}
-export interface Evt extends EvtBody {
-  prev: string;
-  hash: string;
-}
-
-export interface State {
-  policy: Policy;
-  policyHash: string;
-  held: Milli;
-  settled: Milli;
-  wallet: Milli;
-  purchases: Purchase[];
-  events: Evt[];
-  claims: Record<string, Claim>;
-  session: { key: string; n: number; state: "active" | "revoked" };
-  counter: number;
-}
 
 // ───────── helpers ─────────
 
@@ -224,8 +106,6 @@ function persist() {
     /* storage unavailable: state lives for this visit only */
   }
 }
-
-export type TxResult = { ok: true } | { ok: false; error: string };
 
 function tx(fn: (draft: State) => void): TxResult {
   const draft: State = JSON.parse(JSON.stringify(state));
@@ -642,12 +522,6 @@ export function useLedger(): State {
     () => state,
   );
 }
-
-export type Verification =
-  | { status: "idle" }
-  | { status: "running" }
-  | { status: "intact"; count: number; head: string; engine: string }
-  | { status: "broken"; at: number; count: number };
 
 /** Re-hash the whole chain with Web Crypto (independent of the writer's hasher). */
 export async function verifyChain(events: Evt[]): Promise<Verification> {

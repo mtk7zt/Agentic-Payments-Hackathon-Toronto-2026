@@ -14,11 +14,13 @@ import json
 import sqlite3
 import threading
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import replace
 from enum import Enum
-from typing import Any, Iterator
+from typing import Any
 
+from ..models.money import MoneyError, validate_milli
 from .policy import Clause, Decision, Evaluation, Intent, Policy, evaluate
 from .sessions import SessionKeys, SessionState
 
@@ -243,6 +245,10 @@ class Ledger:
     def propose(self, *, request_key: str, intent: Intent, tool_call: dict[str, Any],
                 session_key_id: str | None = None) -> tuple[dict[str, Any], bool]:
         """Idempotent on request_key. Same body returns the prior purchase; a changed body is refused."""
+        try:
+            validate_milli(intent.amount, positive=True)
+        except MoneyError as exc:
+            raise LedgerError(str(exc)) from exc
         fingerprint = hashlib.sha256(canonical({
             "seller_domain": intent.seller_domain.lower(), "seller_address": intent.seller_address.lower(),
             "item": intent.item, "amount": intent.amount}).encode()).hexdigest()

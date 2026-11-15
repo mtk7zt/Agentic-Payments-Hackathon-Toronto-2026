@@ -5,22 +5,10 @@
  * These helpers are the seam for switching it to the live backend: set
  * NEXT_PUBLIC_MANDATE_API_URL and feed `subscribe` events into the store.
  */
-export const API_URL = process.env.NEXT_PUBLIC_MANDATE_API_URL ?? "";
+import type { LedgerEventDTO } from "./mandate.types";
+export type { LedgerEventDTO } from "./mandate.types";
 
-export interface LedgerEventDTO {
-  seq: number;
-  ts: number;
-  type: string;
-  actor: string;
-  purchase_id: string | null;
-  amount: number | null; // integer thousandths of USD-TDN
-  clause: string | null;
-  ref: string | null;
-  detail: string;
-  policy_hash: string;
-  prev: string;
-  hash: string;
-}
+export const API_URL = process.env.NEXT_PUBLIC_MANDATE_API_URL ?? "";
 
 async function call<T>(path: string, init?: RequestInit): Promise<T> {
   const r = await fetch(`${API_URL}${path}`, { ...init, headers: { "Content-Type": "application/json", ...init?.headers } });

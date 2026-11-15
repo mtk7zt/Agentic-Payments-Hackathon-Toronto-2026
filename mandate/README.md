@@ -58,6 +58,34 @@ cd frontend && npm install && npm run dev   # http://localhost:3000
 
 The evidence chain is tamper-evident, not immutable: someone who can rewrite the whole database can rewrite the chain. Detecting that needs a checkpoint stored somewhere else, which is not built yet.
 
+## Shared money contracts
+
+`frontend/lib/mandate.types.ts` owns the shared TypeScript contracts. Existing
+imports from `lib/ledger.ts` and `lib/api.ts` continue to work through type
+re-exports. The simulated cockpit types retain their UI shapes; gateway wire
+types use separate names because backend recovery stages and reason codes differ.
+
+Amounts inside the ledger are positive integer thousandths of USD-TDN, bounded
+by `2**53 - 1`. `0.001` maps to `1`, and `2.000` maps to `2000`. Direct ledger
+proposals reject booleans, floats (including `40.0`), zero, negatives, strings,
+and unsafe integers before writing purchases or evidence. Zero remains valid
+for balances and money formatting. The `Milli` TypeScript alias documents units;
+it does not validate untrusted runtime values.
+
+Purchase API amounts are decimal strings; `amount_milli` and event/balance amounts
+are explicitly integer units. GOAT `amount_wei` is an integer string in token
+base units: for a six-decimal token, `40` milli becomes `"40000"`. Keep provider
+base units as strings in JavaScript, since they can exceed its safe integer range.
+
+The current request fingerprint hashes canonical JSON containing the lowercased
+seller domain and address, item, and integer amount. It does not bind tool-call
+arguments. Mock and live rails share the backend purchase contract, while a
+pending live order remains `DISPATCHED` until payment confirmation. Reason-code
+unions in the shared types distinguish this backend contract from the simulator.
+
+Verify the money boundaries and exact reservation/settlement lifecycle with
+`python -m pytest backend/tests/test_money_contract.py` from this directory.
+
 ## Payment rail
 
 `MANDATE_RAIL=mock` (default) uses `MockRail`. `MANDATE_RAIL=goat` uses `GoatFlowRail` against GOAT Flow x402 Testnet3; copy `.env.example` to `.env` and fill the `GOAT_FLOW_*` values.
