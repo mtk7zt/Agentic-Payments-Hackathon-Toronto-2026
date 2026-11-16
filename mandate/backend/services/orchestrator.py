@@ -24,6 +24,12 @@ def _deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> None:
     ledger.record_delivery(purchase_id, d.ok, d.detail)
 
 
+def deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> dict[str, Any]:
+    """Fetch and verify delivery for a purchase that is already settled."""
+    _deliver(ledger, seller, purchase_id)
+    return ledger.purchase(purchase_id)
+
+
 def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str) -> dict[str, Any]:
     """Pay for a RESERVED purchase. Safe to call once; a second call cannot claim again."""
     claim_key = ledger.claim_dispatch(purchase_id, getattr(rail, "name", None))  # durable intent, before any money moves
@@ -52,25 +58,53 @@ def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str)
 
 def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str,
               rail_order_id: str | None = None) -> dict[str, Any]:
-    """Resolve an open purchase by asking the rail about the ORIGINAL order. Never re-creates one."""
+    """Resolve an open purchase by asking the rail about the ORIGINAL order. Never re-creates one.
+
+    Identity comes from the original order reference: the stored rail order id, or a lookup by the
+    dapp_order_id Mandate sent at dispatch. An order id typed in by the owner is accepted only if the
+    rail does not contradict it. Amount or balance alone never proves which payment is which.
+    Only a definitive UNPAID answer releases the hold; anything else keeps it.
+    """
     p = ledger.purchase(purchase_id)
     if p["stage"] == Stage.RECOVERY_UNDELIVERED.value:
         _deliver(ledger, seller, purchase_id)
         return ledger.purchase(purchase_id)
     if p["stage"] not in (Stage.RECOVERY_UNKNOWN.value, Stage.DISPATCHED.value):
         return p
-    order_id = rail_order_id or p["rail_order_id"]
+    claim_key = ledger.claim_key(purchase_id)
+    order_id = p["rail_order_id"]
+    source = "stored reference"
+    lookup = getattr(rail, "find_by_dapp_order_id", None)
+    if not order_id and claim_key and callable(lookup):
+        order_id = lookup(claim_key)
+        source = "lookup by original dapp_order_id"
+    if not order_id and rail_order_id:
+        order_id, source = rail_order_id, "reference supplied by the owner"
+    elif order_id and rail_order_id and rail_order_id != order_id:
+        ledger.record_reconcile(purchase_id, f"Owner reference {rail_order_id} ignored: purchase is bound to {order_id}",
+                                ref=rail_order_id)
     if not order_id:
         if p["stage"] == Stage.DISPATCHED.value:
             ledger.mark_unknown(purchase_id, "Dispatch has no durable rail order reference")
-        return ledger.purchase(purchase_id)  # operator must establish the original order
+        ledger.record_reconcile(purchase_id, "No order reference and no lookup on this rail. "
+                                             "Hold kept; inspect the provider and resolve by hand.")
+        return ledger.purchase(purchase_id)
     res = rail.get_order(order_id)
+    seen = (res.raw or {}).get("data", res.raw or {})
+    seen_key = seen.get("dapp_order_id") if isinstance(seen, dict) else None
+    if seen_key and claim_key and seen_key != claim_key:
+        ledger.record_reconcile(purchase_id, f"Order {order_id} belongs to {seen_key}, not this purchase. Hold kept.",
+                                ref=order_id)
+        return ledger.purchase(purchase_id)
     if res.outcome is RailOutcome.SETTLED:
-        # A rail may answer with the final transaction id (Qatom: approval ref -> transaction id).
         ledger.settle(purchase_id, res.order_id or order_id)
         _deliver(ledger, seller, purchase_id)
     elif res.outcome is RailOutcome.UNPAID:
         ledger.close_unpaid(purchase_id, res.status or "unpaid")
+    else:
+        if p["stage"] == Stage.DISPATCHED.value and res.outcome is RailOutcome.UNKNOWN:
+            ledger.mark_unknown(purchase_id, f"Rail lookup gave no answer ({res.status or 'unknown'})")
+        ledger.record_reconcile(purchase_id, f"Rail says {res.outcome.value} via {source}. Hold kept.", ref=order_id)
     return ledger.purchase(purchase_id)
 
 
