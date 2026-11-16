@@ -17,7 +17,8 @@
  *   POST  /api/v1/purchases                          agent     PurchaseDTO (X-Session-Key)
  *   GET   /api/v1/catalog                            agent     catalog (not used by the cockpit)
  *   GET   /api/v1/purchases/{id}                     agent     PurchaseDTO (not used by the cockpit)
- *   POST  /api/v1/purchases/{id}/approve             owner     PurchaseDTO
+ *   GET   /api/v1/purchases/{id}/approval            owner     ApprovalSummaryDTO (exact terms + digest)
+ *   POST  /api/v1/purchases/{id}/approve             owner     { digest } -> PurchaseDTO
  *   POST  /api/v1/purchases/{id}/reject              owner     PurchaseDTO
  *   POST  /api/v1/purchases/{id}/reconcile           owner     PurchaseDTO (?rail_order_id=)
  *   GET   /api/v1/purchases/{id}/evidence            owner     EvidenceDTO
@@ -47,6 +48,21 @@ const ownerToken = () => ownerCredential || DEV_OWNER_TOKEN;
 
 export type RailName = "mock" | "goat" | "qatom" | (string & {});
 export type SessionState = "active" | "frozen" | "revoked";
+
+/** What the owner approves. Any change to these terms invalidates the approval. */
+export interface ApprovalSummaryDTO {
+  purchase_id: string;
+  mandate_id: string;
+  seller_domain: string;
+  seller_address: string;
+  item: string;
+  amount_milli: number;
+  amount: string;
+  arguments_sha256: string;
+  policy_version: number;
+  digest: string;
+  expires_at: number | null;
+}
 
 export interface PurchaseDTO {
   id: string;
@@ -251,7 +267,9 @@ export const api = {
   // purchases
   propose: (body: PurchaseRequestDTO, token: string) =>
     call<PurchaseDTO>("/api/v1/purchases", { ...post(body, { "X-Session-Key": token }), owner: false }),
-  approve: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/approve`, post()),
+  approval: (id: string) => call<ApprovalSummaryDTO>(`/api/v1/purchases/${enc(id)}/approval`),
+  /** Approves exactly the terms in `approval(id)`. A changed purchase or policy makes the digest stale (409). */
+  approve: (id: string, digest: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/approve`, post({ digest })),
   reject: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/reject`, post()),
   reconcile: (id: string, railOrderId?: string) =>
     call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/reconcile${railOrderId ? `?rail_order_id=${enc(railOrderId)}` : ""}`, post()),

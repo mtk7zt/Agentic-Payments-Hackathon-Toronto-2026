@@ -135,7 +135,8 @@ class Ledger:
                 self._emit("POLICY_SNAPSHOT", "owner", detail=f"Policy v{pol.version} snapshot")
 
     # Columns added after the first release. Older databases get them on open; existing rows stay valid (NULL).
-    _ADDED_PURCHASE_COLUMNS = (("rail", "TEXT"), ("approval_id", "TEXT"), ("rail_tx_id", "TEXT"))
+    _ADDED_PURCHASE_COLUMNS = (("rail", "TEXT"), ("approval_id", "TEXT"), ("rail_tx_id", "TEXT"),
+                               ("approval_digest", "TEXT"))
 
     def _migrate(self) -> None:
         have = {r["name"] for r in self.conn.execute("PRAGMA table_info(purchases)")}
@@ -163,6 +164,37 @@ class Ledger:
     def resolve_rail_approval(self, approval_id: str) -> None:
         with self._lock:
             self.conn.execute("UPDATE rail_approvals SET state='RESOLVED' WHERE approval_id=?", (approval_id,))
+
+    # ───────── approval binding (MND-10) ─────────
+
+    def _approval_terms(self, p: sqlite3.Row, policy_version: int) -> dict[str, Any]:
+        """What the owner is approving. Any change to these makes the approval invalid."""
+        return {"purchase_id": p["id"], "mandate_id": self.mandate_id, "seller_domain": p["seller_domain"],
+                "seller_address": p["seller_address"], "item": p["item"], "amount_milli": p["amount"],
+                "arguments_sha256": hashlib.sha256(p["tool_call_json"].encode()).hexdigest(),
+                "policy_version": policy_version}
+
+    def _approval_digest(self, p: sqlite3.Row, policy_version: int) -> str:
+        return hashlib.sha256(canonical(self._approval_terms(p, policy_version)).encode()).hexdigest()
+
+    def approval_summary(self, purchase_id: str) -> dict[str, Any]:
+        """The exact terms shown to the owner, plus the digest they must send back to approve."""
+        with self._lock:
+            p = self._purchase(purchase_id)
+            if p["stage"] != Stage.PENDING_APPROVAL.value or not p["approval_digest"]:
+                raise LedgerError("not awaiting approval")
+            return {**self._approval_terms(p, p["policy_version"]), "digest": p["approval_digest"],
+                    "expires_at": p["expires_at"]}
+
+    def _check_binding(self, p: sqlite3.Row) -> None:
+        """The stored digest must still describe this row under the current policy version."""
+        if not p["approval_digest"]:
+            return  # created before MND-10; the policy recheck still applies
+        current = self.policy().version
+        if current != p["policy_version"]:
+            raise LedgerError(f"approval was requested under policy v{p['policy_version']}; policy is now v{current}")
+        if self._approval_digest(p, current) != p["approval_digest"]:
+            raise LedgerError("purchase changed after approval was requested")
 
     # ───────── transaction plumbing ─────────
 
@@ -601,17 +633,23 @@ class Ledger:
                        detail="Hold placed")
             if ev.decision is Decision.HELD_FOR_REVIEW:
                 self._stage(purchase_id, Stage.PENDING_APPROVAL, expires_at=time.time() + approval_window_s, **base)
+                digest = self._approval_digest(self._purchase(purchase_id), ev.policy_version)
+                self.conn.execute("UPDATE purchases SET approval_digest=? WHERE id=?", (digest, purchase_id))
                 self._emit("APPROVAL_REQUESTED", "gateway", purchase_id=purchase_id, amount=p["amount"],
                            clause=ev.clause.value, detail="Waiting for a person")
             else:
                 self._stage(purchase_id, Stage.RESERVED, **base)
             return ev
 
-    def approve(self, purchase_id: str) -> None:
+    def approve(self, purchase_id: str, digest: str | None = None) -> None:
+        """Approve exactly the terms in approval_summary(). `digest` must match when given (the API requires it)."""
         with self._tx():
             p = self._purchase(purchase_id)
             if p["stage"] != Stage.PENDING_APPROVAL.value:
                 raise LedgerError("not awaiting approval")
+            if digest is not None and not hmac.compare_digest(digest, p["approval_digest"] or ""):
+                raise LedgerError("approval does not match this purchase's terms")
+            self._check_binding(p)
             if self.policy().paused:
                 raise LedgerError("kill-switch engaged")
             self._require_active_session(p["session_key_id"])
@@ -620,7 +658,8 @@ class Ledger:
             self._recheck_reserved_policy(p)
             self._stage(purchase_id, Stage.RESERVED, approved_by_human=1)
             self._emit("APPROVAL_GRANTED", "approver", purchase_id=purchase_id, amount=p["amount"],
-                       detail="Authorized for this exact seller, item and amount")
+                       ref=p["approval_digest"],
+                       detail=f"Authorized for this exact seller, item, arguments and amount under policy v{p['policy_version']}")
 
     def release(self, purchase_id: str, *, expired: bool = False) -> None:
         with self._tx():
@@ -642,6 +681,8 @@ class Ledger:
             if self.policy().paused:
                 raise LedgerError("kill-switch engaged")
             self._require_active_session(p["session_key_id"])
+            if p["approved_by_human"]:
+                self._check_binding(p)
             self._recheck_reserved_policy(p, require_approval=True)
             if self.wallet_status()["dispatch_blocked"]:
                 raise LedgerError("wallet mismatch or insufficient monitored wallet coverage")
