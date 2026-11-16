@@ -61,6 +61,9 @@ class Policy:
     transaction_ceiling: int = 3_000  # hard cap; approval cannot override
     task_budget_cap: int = 5_000
     max_attempts: int = 5
+    # Rolling window for counting repeat purchases of the same item from the same seller.
+    # A loop re-buying inside the window hits max_attempts; a weekly household order does not.
+    repeat_window_s: int = 86_400
     strict_whitelist: bool = True
     paused: bool = False
     # seller domain -> payment address on file (lower-case)

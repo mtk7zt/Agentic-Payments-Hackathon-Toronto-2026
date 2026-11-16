@@ -586,9 +586,17 @@ class Ledger:
                 return dict(prior), False
             n = self.conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0] + 1
             pid = f"pur_{n:04d}"
+            # Earlier purchases of this item from this seller inside the policy's rolling window that hold
+            # or spent money count as attempts, so a runaway loop hits max_attempts (MND-22) while a
+            # weekly household order does not. Stuck recoveries always count, whatever their age.
+            # Blocked, rejected and definitively unpaid purchases moved no money and never count.
+            window_start = time.time() - self.policy().repeat_window_s
+            live = (*HOLDING, *PAID)
             attempt = 1 + self.conn.execute(
-                "SELECT COUNT(*) FROM purchases WHERE item=? AND stage IN (?,?)",
-                (intent.item, Stage.RECOVERY_UNKNOWN.value, Stage.RECOVERY_UNDELIVERED.value)).fetchone()[0]
+                f"SELECT COUNT(*) FROM purchases WHERE mandate_id=? AND item=? AND seller_domain=? "
+                f"AND stage IN ({','.join('?' * len(live))}) AND (created_at>=? OR stage IN (?,?))",
+                (self.mandate_id, intent.item, envelope["seller_domain"], *[c.value for c in live], window_start,
+                 Stage.RECOVERY_UNKNOWN.value, Stage.RECOVERY_UNDELIVERED.value)).fetchone()[0]
             now = time.time()
             self.conn.execute(
                 "INSERT INTO purchases(id,mandate_id,request_key,fingerprint,seller_domain,seller_address,item,amount,"

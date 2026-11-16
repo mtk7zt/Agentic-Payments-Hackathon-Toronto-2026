@@ -173,6 +173,8 @@ export interface PolicyPatch {
   max_single_spend?: string;
   strict_whitelist?: boolean;
   max_attempts?: number;
+  /** Seconds; repeat purchases of one item inside this window count toward max_attempts. */
+  repeat_window_s?: number;
   whitelisted_sellers?: Record<string, string>;
 }
 
