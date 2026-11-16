@@ -27,7 +27,7 @@
   .eyebrow { @apply font-mono text-[10.5px] uppercase tracking-[0.18em] text-slate-500; }
   /* Hardware key. Press travel is 2px and state changes are near-instant. */
   .btn {
-    @apply inline-flex min-h-[40px] select-none items-center justify-center gap-2 rounded-md px-4 text-[13.5px] font-medium;
+    @apply inline-flex min-h-[44px] select-none items-center justify-center gap-2 rounded-md px-4 text-[13.5px] font-medium;
     transition: transform 40ms linear, box-shadow 40ms linear, background-color 60ms linear;
   }
   .btn:active { transform: translateY(2px); }

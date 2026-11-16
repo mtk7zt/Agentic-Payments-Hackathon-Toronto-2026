@@ -73,7 +73,7 @@ export const bodyOf = (e: Evt): EvtBody | Record<string, unknown> =>
   policyHash: e.policyHash,
 };
 
-export const available = (s: State) => BUDGET - s.held - s.settled;
+export const available = (s: State) => (s.budget ?? BUDGET) - s.held - s.settled;
 const keyName = (n: number) => `sk_agent04_${String(n).padStart(2, "0")}`;
 
 const HOLD: Stage[] = ["PENDING_APPROVAL", "RESERVED", "DISPATCHED"];

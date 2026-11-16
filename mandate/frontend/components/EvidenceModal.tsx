@@ -1,12 +1,12 @@
 "use client";
 
 // Settlement slip and forensic record: payload, clause, protocol split, SHA-256 chain verification.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import { Badge, Money, stageBadge } from "./kit";
 import { Line, TXT, deliveryLine, overlay, settlementLine, sheet, utc } from "./shared";
-import { CLAUSE_TEXT, fmt, short, verifyChain } from "@/lib/mandate";
+import { CLAUSE_TEXT, fmt, isLive, loadEvidence, reconcile, short, useLive, verifyChain, verifyOnGateway } from "@/lib/mandate";
 import type { Evt, Purchase, State, Verification } from "@/lib/mandate";
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
@@ -38,7 +38,17 @@ export function EvidenceModal({ p, s, onClose, onToast }: { p: Purchase | null; 
   const [v, setV] = useState<Verification>({ status: "idle" });
   const [tampered, setTampered] = useState(false);
   const [sel, setSel] = useState<number | null>(null);
+  const [orderId, setOrderId] = useState("");
+  const x = useLive();
+  const id = p?.id;
+  const stage = p?.stage;
+  // Live mode: pull this purchase's events from the gateway's evidence bundle.
+  useEffect(() => {
+    if (id && x) void loadEvidence(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id, stage, !!x]);
   if (!p) return null;
+  const rail = x?.rail ?? "mock";
 
   const events: Evt[] = tampered
     ? s.events.map((e) => (e.purchaseId === p.id && e.type === "POLICY_EVALUATED" ? { ...e, detail: "AUTO_APPROVED · edited after the fact" } : e))
@@ -47,11 +57,11 @@ export function EvidenceModal({ p, s, onClose, onToast }: { p: Purchase | null; 
   const cur = mine.find((e) => e.seq === sel) ?? mine[mine.length - 1];
   const blocked = p.stage === "BLOCKED";
   const payload = { tool: p.toolCall.tool, arguments: p.toolCall.arguments, idempotencyKey: p.idempotencyKey, redacted: ["credentials", "approval links"] };
-  const bundle = { schema: "mandate.evidence.v3", mode: "mock", purchase: p, events: mine, head: s.events[s.events.length - 1]?.hash };
+  const bundle = { schema: "mandate.evidence.v3", mode: x ? "live" : "simulated", rail, purchase: p, events: mine, head: s.events[s.events.length - 1]?.hash };
 
   const verify = async () => {
     setV({ status: "running" });
-    setV(await verifyChain(events));
+    setV(x && !tampered ? await verifyOnGateway() : await verifyChain(events));
   };
   const copy = async () => {
     try {
@@ -71,20 +81,44 @@ export function EvidenceModal({ p, s, onClose, onToast }: { p: Purchase | null; 
             <div>
               <div className="flex flex-wrap gap-2">
                 <Badge tone={stageBadge(p).tone}>{stageBadge(p).label}</Badge>
-                <Badge tone="neutral">mock mode</Badge>
+                <Badge tone="neutral">{x ? `${rail} rail` : "simulated"}</Badge>
               </div>
               <Dialog.Title className="mt-3 text-[19px] font-semibold tracking-tight">{blocked ? "Halted attempt · forensic record" : "Settlement slip · audit record"}</Dialog.Title>
               <Dialog.Description className="mt-1 font-mono text-[11.5px] text-slate-400">
                 {p.id} · {p.itemLabel} · {p.vendor} · {fmt(p.amount)} USD-TDN
               </Dialog.Description>
             </div>
-            <Dialog.Close aria-label="Close" className="btn-ghost min-h-[32px] w-8 px-0">
+            <Dialog.Close aria-label="Close" className="btn-ghost min-h-[44px] w-11 px-0">
               <X aria-hidden="true" className="h-4 w-4" />
             </Dialog.Close>
           </div>
 
           <div className="grid gap-3 p-5 lg:grid-cols-2">
             <div className="space-y-3">
+              <Panel title="Purchase detail">
+                <dl>
+                  <Line k="Stage"><span className="font-mono">{p.stage}{p.recovery ? ` · ${p.recovery}` : ""}</span></Line>
+                  <Line k="Rail"><span className="font-mono">{rail}</span></Line>
+                  <Line k="Rail order / transaction id"><span className="font-mono text-[11.5px]">{p.qatomTx ?? "none yet"}</span></Line>
+                  <Line k="Delivery"><span className={`font-mono text-[11.5px] ${TXT[deliveryLine(p).tone]}`}>{p.delivery} · {deliveryLine(p).text}</span></Line>
+                  <Line k="Decision"><span className="font-mono">{p.decision ?? "pending"}{p.approvedByHuman ? " · human approved" : ""}</span></Line>
+                  <Line k="Request key"><span className="font-mono text-[11px]">{p.idempotencyKey}</span></Line>
+                </dl>
+                {p.stage === "RECOVERY" && isLive() && (
+                  <form
+                    className="mt-3 space-y-2"
+                    onSubmit={async (e) => {
+                      e.preventDefault();
+                      const r = await reconcile(p.id, orderId.trim() || undefined);
+                      onToast(r.ok ? "Reconcile sent to the gateway." : r.error);
+                    }}
+                  >
+                    <label htmlFor="rail-order" className="block text-[12.5px] font-medium">Rail order id (optional)</label>
+                    <input id="rail-order" value={orderId} onChange={(e) => setOrderId(e.target.value)} placeholder={p.qatomTx ?? "order id from the rail"} className="well h-11 w-full rounded-md px-3 font-mono text-[12px] text-content placeholder:text-slate-600" />
+                    <button type="submit" className="btn-ghost w-full">Reconcile with rail</button>
+                  </form>
+                )}
+              </Panel>
               <Panel title="Captured tool payload · sanitized">
                 {p.injected && <p className="mb-2 break-all rounded-[4px] border border-rose-500/40 bg-rose-500/10 p-2.5 font-mono text-[11.5px] leading-relaxed text-rose-200">{p.injected}</p>}
                 <pre tabIndex={0} className="overflow-x-auto whitespace-pre-wrap break-all font-mono text-[11.5px] leading-relaxed text-slate-300">{JSON.stringify(payload, null, 2)}</pre>
@@ -110,10 +144,10 @@ export function EvidenceModal({ p, s, onClose, onToast }: { p: Purchase | null; 
                   </dl>
                 ) : (
                   <dl>
-                    <Line k="A · Qatom settlement"><span className={`font-mono text-[11.5px] ${TXT[settlementLine(p).tone]}`}>{settlementLine(p).text}</span></Line>
+                    <Line k="A · Rail settlement"><span className={`font-mono text-[11.5px] ${TXT[settlementLine(p).tone]}`}>{settlementLine(p).text}</span></Line>
                     <Line k="Charged"><Money v={p.qatomTx ? p.amount : 0} /></Line>
                     <Line k="B · Vendor payload"><span className={`font-mono text-[11.5px] ${TXT[deliveryLine(p).tone]}`}>{deliveryLine(p).text}</span></Line>
-                    <Line k="Receipt">Recorded · mock, not provider-verified</Line>
+                    <Line k="Receipt">{x && rail !== "mock" ? `Recorded from the ${rail} rail` : "Recorded · mock, not provider-verified"}</Line>
                   </dl>
                 )}
               </Panel>

@@ -2,17 +2,49 @@
  * Typed client for the Mandate gateway (backend/api/main.py).
  *
  * Set NEXT_PUBLIC_MANDATE_API_URL (for example http://localhost:8000) and the
- * cockpit runs against the gateway: state over REST, events over the SSE
- * stream at /api/events. With it unset, or when the gateway cannot be
- * reached, lib/mandate.ts falls back to the simulated ledger.
+ * cockpit runs against the gateway. With it unset, or when the gateway cannot
+ * be reached, lib/mandate.ts falls back to the simulated ledger.
+ *
+ * Owner routes need the X-Owner-Token header. For local development only, the
+ * token is read from NEXT_PUBLIC_MANDATE_OWNER_TOKEN. A NEXT_PUBLIC_ value is
+ * compiled into the browser bundle, so it must never be set for a shared or
+ * deployed build. Real owner sign-in is tracked as MND-17.
+ *
+ * Route map (owner = needs X-Owner-Token):
+ *   GET   /health                                    public    { status, rail }
+ *   GET   /api/v1/state                              owner     StateDTO
+ *   POST  /api/v1/purchases                          agent     PurchaseDTO (X-Session-Key)
+ *   GET   /api/v1/catalog                            agent     catalog (not used by the cockpit)
+ *   GET   /api/v1/purchases/{id}                     agent     PurchaseDTO (not used by the cockpit)
+ *   POST  /api/v1/purchases/{id}/approve             owner     PurchaseDTO
+ *   POST  /api/v1/purchases/{id}/reject              owner     PurchaseDTO
+ *   POST  /api/v1/purchases/{id}/reconcile           owner     PurchaseDTO (?rail_order_id=)
+ *   GET   /api/v1/purchases/{id}/evidence            owner     EvidenceDTO
+ *   GET   /api/v1/evidence/verify                    owner     ChainDTO
+ *   PATCH /api/v1/policy                             owner     PolicyDTO (expected_version; 409 if stale)
+ *   POST  /api/v1/kill-switch                        owner     KillSwitchDTO
+ *   GET   /api/v1/session-keys                       owner     SessionKeyDTO[]
+ *   POST  /api/v1/session-keys                       owner     { key_id, token, note } (token shown once)
+ *   POST  /api/v1/session-keys/{id}/state            owner     SessionKeyDTO
+ *   GET   /api/v1/wallet                             owner     WalletDTO
+ *   POST  /api/v1/wallet/configure                   owner     WalletDTO
+ *   POST  /api/v1/wallet/observations                owner     WalletDTO
+ *   POST  /api/v1/wallet/reconcile                   owner     WalletDTO
+ *   GET   /api/v1/stream, /api/events (SSE)          owner     ledger events
  */
 import type { BackendPolicyClause, BackendPurchaseStage, LedgerEventDTO, PurchaseRequestDTO } from "./mandate.types";
 export type { LedgerEventDTO } from "./mandate.types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_MANDATE_API_URL ?? "").replace(/\/$/, "");
+/** Dev-only. See the note at the top of this file and frontend/.env.example. */
+const OWNER_TOKEN = process.env.NEXT_PUBLIC_MANDATE_OWNER_TOKEN ?? "";
+
+export type RailName = "mock" | "goat" | "qatom" | (string & {});
+export type SessionState = "active" | "frozen" | "revoked";
 
 export interface PurchaseDTO {
   id: string;
+  mandate_id?: string;
   seller_domain: string;
   seller_address: string;
   item: string;
@@ -44,69 +76,185 @@ export interface PolicyDTO {
   strict_whitelist: boolean;
   paused: boolean;
   whitelisted_sellers: Record<string, string>;
+  expires_at?: number | null;
+  argument_constraints?: Record<string, unknown>;
   hash: string;
+}
+
+export interface ChainDTO {
+  intact: boolean;
+  events: number;
+  head?: string;
+  first_bad_seq?: number;
+}
+
+export interface SessionKeyDTO {
+  key_id: string;
+  agent_id?: string;
+  state: SessionState;
 }
 
 export interface StateDTO {
   mandate_id: string;
-  rail: string;
+  rail: RailName;
   balances: { budget: number; held: number; settled: number; available: number };
   policy: PolicyDTO;
   purchases: PurchaseDTO[];
-  chain: { intact: boolean; events: number; head?: string; first_bad_seq?: number };
-  session_keys?: { key_id: string; state: "active" | "frozen" | "revoked" }[];
+  chain: ChainDTO;
+  session_keys?: SessionKeyDTO[];
 }
+
+export type WalletDTO =
+  | { configured: false; mismatch: false; dispatch_blocked: false; provenance: "unconfigured" }
+  | {
+      configured: true;
+      mismatch: boolean;
+      dispatch_blocked: boolean;
+      expected_milli: number;
+      observed_milli: number;
+      observed_at_settled_milli: number;
+      allocation_covered: boolean;
+      reference: string;
+      recorded_at: number;
+      provenance: "owner_recorded";
+    };
+
+export interface EvidenceDTO {
+  schema: string;
+  purchase: PurchaseDTO;
+  events: LedgerEventDTO[];
+  chain: ChainDTO;
+  redactions: string[];
+}
+
+export interface KillSwitchDTO {
+  engaged: boolean;
+  revoked?: string[];
+  slip?: LedgerEventDTO[];
+  chain?: ChainDTO;
+  notice?: string;
+}
+
+export interface PolicyPatch {
+  expected_version: number;
+  max_single_spend?: string;
+  strict_whitelist?: boolean;
+  max_attempts?: number;
+  whitelisted_sellers?: Record<string, string>;
+}
+
+/** offline → fall back to simulation · auth → sign in needed · conflict → rules changed, reload. */
+export type ErrorKind = "offline" | "auth" | "conflict" | "invalid" | "notfound" | "server";
 
 export class ApiError extends Error {
   constructor(public status: number, message: string) {
     super(message);
   }
-}
-
-async function call<T>(path: string, init?: RequestInit & { timeoutMs?: number }): Promise<T> {
-  const { timeoutMs = 8000, ...rest } = init ?? {};
-  const ctl = new AbortController();
-  const timer = setTimeout(() => ctl.abort(), timeoutMs);
-  try {
-    const r = await fetch(`${API_URL}${path}`, { ...rest, signal: ctl.signal, headers: { "Content-Type": "application/json", ...rest.headers } });
-    if (!r.ok) {
-      let detail = r.statusText;
-      try {
-        detail = ((await r.json()) as { detail?: string }).detail ?? detail;
-      } catch {
-        /* non-JSON error body */
-      }
-      throw new ApiError(r.status, typeof detail === "string" ? detail : JSON.stringify(detail));
-    }
-    return (await r.json()) as T;
-  } finally {
-    clearTimeout(timer);
+  get kind(): ErrorKind {
+    return errorKind(this.status);
   }
 }
 
-const post = (body?: unknown, headers?: Record<string, string>): RequestInit => ({ method: "POST", body: body === undefined ? undefined : JSON.stringify(body), headers });
+export function errorKind(status: number): ErrorKind {
+  if (status === 0) return "offline";
+  if (status === 401 || status === 403) return "auth";
+  if (status === 409) return "conflict";
+  if (status === 404) return "notfound";
+  if (status === 400 || status === 422) return "invalid";
+  return "server";
+}
+
+export function kindOf(err: unknown): ErrorKind {
+  return err instanceof ApiError ? err.kind : "offline";
+}
+
+/** Plain words for each failure, shown in the cockpit's status line. */
+export function describe(err: unknown): string {
+  const kind = kindOf(err);
+  const detail = err instanceof Error ? err.message : String(err);
+  switch (kind) {
+    case "offline":
+      return "Gateway unreachable. Showing the simulated ledger.";
+    case "auth":
+      return "Sign in needed. The gateway refused the owner token.";
+    case "conflict":
+      return `Rules changed, reload. ${detail}`;
+    case "notfound":
+      return "Not found on the gateway.";
+    case "invalid":
+      return `The gateway rejected the request: ${detail}`;
+    default:
+      return `Gateway error: ${detail}`;
+  }
+}
+
+function formatDetail(detail: unknown, fallback: string): string {
+  if (typeof detail === "string") return detail;
+  if (Array.isArray(detail)) return detail.map((d) => (d && typeof d === "object" && "msg" in d ? String(d.msg) : JSON.stringify(d))).join("; ");
+  return detail === undefined ? fallback : JSON.stringify(detail);
+}
+
+async function call<T>(path: string, init?: RequestInit & { timeoutMs?: number; owner?: boolean }): Promise<T> {
+  const { timeoutMs = 8000, owner = true, ...rest } = init ?? {};
+  const ctl = new AbortController();
+  const timer = setTimeout(() => ctl.abort(), timeoutMs);
+  let r: Response;
+  try {
+    r = await fetch(`${API_URL}${path}`, {
+      ...rest,
+      signal: ctl.signal,
+      headers: { "Content-Type": "application/json", ...(owner && OWNER_TOKEN ? { "X-Owner-Token": OWNER_TOKEN } : {}), ...rest.headers },
+    });
+  } catch (err) {
+    throw new ApiError(0, err instanceof Error ? err.message : "network error");
+  } finally {
+    clearTimeout(timer);
+  }
+  if (!r.ok) {
+    let detail = r.statusText;
+    try {
+      detail = formatDetail(((await r.json()) as { detail?: unknown }).detail, detail);
+    } catch {
+      /* non-JSON error body */
+    }
+    throw new ApiError(r.status, detail);
+  }
+  return (await r.json()) as T;
+}
+
+const post = (body?: unknown, headers?: Record<string, string>): RequestInit => ({
+  method: "POST",
+  body: body === undefined ? undefined : JSON.stringify(body),
+  headers,
+});
+const enc = encodeURIComponent;
 
 export const api = {
+  health: () => call<{ status: string; rail: RailName }>("/health", { owner: false, timeoutMs: 1500 }),
   state: (timeoutMs = 8000) => call<StateDTO>("/api/v1/state", { timeoutMs }),
-  issueKey: () => call<{ key_id: string; token: string }>("/api/v1/session-keys", post()),
-  propose: (body: PurchaseRequestDTO, token: string) => call<PurchaseDTO>("/api/v1/purchases", post(body, { "X-Session-Key": token })),
-  approve: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${id}/approve`, post()),
-  reject: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${id}/reject`, post()),
-  reconcile: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${id}/reconcile`, post()),
-  patchPolicy: (body: Record<string, unknown>) => call<PolicyDTO>("/api/v1/policy", { method: "PATCH", body: JSON.stringify(body) }),
-  killSwitch: (engaged: boolean) => call<{ engaged: boolean; revoked?: string[] }>("/api/v1/kill-switch", post({ engaged })),
-  verify: () => call<StateDTO["chain"]>("/api/v1/evidence/verify"),
-};
 
-/**
- * Server-sent ledger events from /api/events. The browser reconnects by itself
- * and resends Last-Event-ID, so the stream resumes where it stopped.
- */
-export function subscribe(onEvent: (e: LedgerEventDTO) => void, onStatus?: (s: "open" | "stale") => void): () => void {
-  if (!API_URL || typeof EventSource === "undefined") return () => {};
-  const es = new EventSource(`${API_URL}/api/events`);
-  es.addEventListener("ledger.appended", (m) => onEvent(JSON.parse((m as MessageEvent).data) as LedgerEventDTO));
-  es.onopen = () => onStatus?.("open");
-  es.onerror = () => onStatus?.("stale");
-  return () => es.close();
-}
+  // purchases
+  propose: (body: PurchaseRequestDTO, token: string) =>
+    call<PurchaseDTO>("/api/v1/purchases", { ...post(body, { "X-Session-Key": token }), owner: false }),
+  approve: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/approve`, post()),
+  reject: (id: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/reject`, post()),
+  reconcile: (id: string, railOrderId?: string) =>
+    call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/reconcile${railOrderId ? `?rail_order_id=${enc(railOrderId)}` : ""}`, post()),
+  evidence: (id: string) => call<EvidenceDTO>(`/api/v1/purchases/${enc(id)}/evidence`),
+  verify: () => call<ChainDTO>("/api/v1/evidence/verify"),
+
+  // policy and kill-switch
+  patchPolicy: (body: PolicyPatch) => call<PolicyDTO>("/api/v1/policy", { method: "PATCH", body: JSON.stringify(body) }),
+  killSwitch: (engaged: boolean) => call<KillSwitchDTO>("/api/v1/kill-switch", post({ engaged })),
+
+  // session keys
+  sessionKeys: () => call<SessionKeyDTO[]>("/api/v1/session-keys"),
+  issueKey: () => call<{ key_id: string; token: string; note?: string }>("/api/v1/session-keys", post()),
+  setKeyState: (keyId: string, state: SessionState) => call<SessionKeyDTO>(`/api/v1/session-keys/${enc(keyId)}/state`, post({ state })),
+
+  // wallet (owner-recorded snapshots, never a live provider balance)
+  wallet: () => call<WalletDTO>("/api/v1/wallet"),
+  configureWallet: (balance_milli: number, reference: string) => call<WalletDTO>("/api/v1/wallet/configure", post({ balance_milli, reference })),
+  observeWallet: (balance_milli: number, reference: string) => call<WalletDTO>("/api/v1/wallet/observations", post({ balance_milli, reference })),
+  reconcileWallet: (balance_milli: number, reference: string) => call<WalletDTO>("/api/v1/wallet/reconcile", post({ balance_milli, reference })),
+};

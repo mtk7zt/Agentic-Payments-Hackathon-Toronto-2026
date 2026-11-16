@@ -6,11 +6,20 @@ import { X } from "lucide-react";
 import { Badge, Money } from "./kit";
 import type { Tone } from "./kit";
 import { Line, overlay, sheet } from "./shared";
-import { CLAUSE_TEXT, approveAndRun, available, fmt, release, short } from "@/lib/mandate";
+import { useState } from "react";
+import { CLAUSE_TEXT, approveAndRun, available, fmt, isLive, release, short } from "@/lib/mandate";
 import type { Purchase, State } from "@/lib/mandate";
 
 export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase | null; s: State; now: number; onClose: () => void; onError: (m: string) => void }) {
+  const [busy, setBusy] = useState<"approve" | "decline" | null>(null);
   if (!p) return null;
+  const decide = async (kind: "approve" | "decline") => {
+    setBusy(kind);
+    const r = kind === "approve" ? await approveAndRun(p.id) : await release(p.id, "REJECTED");
+    setBusy(null);
+    if (r.ok) onClose();
+    else onError(r.error);
+  };
   const left = Math.max(0, (p.expiresAt ?? 0) - now);
   const live = p.stage === "PENDING_APPROVAL" && left > 0 && !s.policy.paused;
   const mm = String(Math.floor(left / 60000)).padStart(2, "0");
@@ -34,7 +43,7 @@ export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase 
                 Agent requested {fmt(p.amount)} USD-TDN to acquire {p.itemLabel} from {p.vendor}.
               </Dialog.Description>
             </div>
-            <Dialog.Close aria-label="Close" className="btn-ghost min-h-[32px] w-8 px-0">
+            <Dialog.Close aria-label="Close" className="btn-ghost min-h-[44px] w-11 px-0">
               <X aria-hidden="true" className="h-4 w-4" />
             </Dialog.Close>
           </div>
@@ -51,7 +60,7 @@ export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase 
                   <span key={i} className={`h-2 flex-1 rounded-[1px] ${i < Math.ceil((left / (15 * 60000)) * 30) ? "bg-amber-400" : "bg-white/10"}`} />
                 ))}
               </div>
-              <p className="mt-2 text-[11.5px] text-slate-500">Mock deadline. Live mode uses the expiry Qatom returns for its approval link.</p>
+              <p className="mt-2 text-[11.5px] text-slate-500">{isLive() ? "Deadline set by the gateway. After it passes, the gateway refuses a late approval." : "Simulated deadline."}</p>
             </div>
 
             <dl className="well rounded-md px-4 py-1">
@@ -68,20 +77,17 @@ export function EscalationDrawer({ p, s, now, onClose, onError }: { p: Purchase 
           <div className="mt-auto space-y-2.5 border-t border-white/[0.08] p-5">
             <button
               type="button"
-              disabled={!live}
+              disabled={!live || busy !== null}
+              aria-busy={busy === "approve"}
               className="btn-primary min-h-[46px] w-full text-[14.5px]"
-              onClick={async () => {
-                const r = await approveAndRun(p.id);
-                if (r.ok) onClose();
-                else onError(r.error);
-              }}
+              onClick={() => decide("approve")}
             >
-              Authorize via Qatom
+              {busy === "approve" ? "Approving…" : "Approve purchase"}
             </button>
-            <button type="button" disabled={!live} className="btn-ghost min-h-[44px] w-full text-rose-300" onClick={() => { release(p.id, "REJECTED"); onClose(); }}>
-              Reject purchase
+            <button type="button" disabled={!live || busy !== null} aria-busy={busy === "decline"} className="btn-ghost min-h-[44px] w-full text-rose-300" onClick={() => decide("decline")}>
+              {busy === "decline" ? "Declining…" : "Decline purchase"}
             </button>
-            <p className="text-[11.5px] leading-snug text-slate-500">Simulated callback. In live mode this opens the Qatom approval link and the purchase continues only once Qatom confirms. Rejecting releases the hold.</p>
+            <p className="text-[11.5px] leading-snug text-slate-500">{isLive() ? "Approving sends the purchase to the gateway, which pays through its configured rail. Declining releases the hold." : "Simulated callback. Declining releases the hold."}</p>
           </div>
         </Dialog.Content>
       </Dialog.Portal>

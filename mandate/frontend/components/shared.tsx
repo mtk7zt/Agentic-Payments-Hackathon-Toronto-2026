@@ -16,7 +16,7 @@ export function settlementLine(p: Purchase): { tone: Tone; text: string } {
   if (p.stage === "PENDING_APPROVAL") return { tone: "warning", text: "awaiting human authorization" };
   if (p.stage === "REJECTED" || p.stage === "EXPIRED") return { tone: "neutral", text: "not called · hold released" };
   if (p.stage === "RESERVED") return { tone: "intent", text: "reserved · claim pending" };
-  if (p.stage === "DISPATCHED") return { tone: "intent", text: `claim ${p.idempotencyKey} · awaiting Qatom` };
+  if (p.stage === "DISPATCHED") return { tone: "intent", text: `claim ${p.idempotencyKey} · awaiting rail` };
   if (p.recovery === "OUTCOME_UNKNOWN") return { tone: "warning", text: `unknown · hold retained · ${p.retriesSuppressed} retry suppressed` };
   return { tone: "success", text: p.latencyMs === null ? `${p.qatomTx}` : `${p.qatomTx} · ${p.latencyMs} ms` };
 }

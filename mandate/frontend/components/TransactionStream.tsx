@@ -118,7 +118,7 @@ function Row({ p, events, onReview, onInspect }: { p: Purchase; events: Evt[]; o
           <dl className="space-y-2 font-mono text-[11.5px]">
             <div>
               <dt className="flex items-center gap-2 text-slate-500">
-                <span aria-hidden="true" className={`led ${LEDC[A.tone]}`} /> A · Qatom settlement
+                <span aria-hidden="true" className={`led ${LEDC[A.tone]}`} /> A · Rail settlement
               </dt>
               <dd className={`mt-0.5 break-all pl-3.5 ${TXT[A.tone]}`}>{A.text}</dd>
             </div>
@@ -140,16 +140,21 @@ function Row({ p, events, onReview, onInspect }: { p: Purchase; events: Evt[]; o
 
           <div className="mt-3 flex flex-wrap items-center gap-2">
             {lastEvt && (
-              <button type="button" onClick={onInspect} aria-label={`Inspect audit record, event ${lastEvt.seq}`} className="btn well min-h-[32px] gap-2 rounded-[4px] px-2.5 font-mono text-[11px] text-emerald-300 hover:border-emerald-400/50">
+              <button type="button" onClick={onInspect} aria-label={`Inspect audit record, event ${lastEvt.seq}`} className="btn well min-h-[44px] gap-2 rounded-[4px] px-2.5 font-mono text-[11px] text-emerald-300 hover:border-emerald-400/50">
                 <span aria-hidden="true" className="led bg-emerald-400" />#{lastEvt.seq} · {lastEvt.hash.slice(0, 10)}… <span className="text-slate-500">audit</span>
               </button>
             )}
+            {!lastEvt && (
+              <button type="button" onClick={onInspect} aria-label={`Open details for purchase ${p.id}`} className="btn-ghost min-h-[44px] px-3 text-[12px]">
+                Details
+              </button>
+            )}
             {p.stage === "PENDING_APPROVAL" && (
-              <button type="button" onClick={onReview} className="btn-amber lockable min-h-[32px] px-3 text-[12px]">Review</button>
+              <button type="button" onClick={onReview} className="btn-amber lockable min-h-[44px] px-3 text-[12px]">Review</button>
             )}
             {p.stage === "RECOVERY" && (
-              <button type="button" onClick={() => reconcile(p.id)} className="btn-ghost min-h-[32px] px-3 text-[12px] text-amber-200">
-                {p.recovery === "DELIVERY_FAILED" ? "Re-request delivery" : "Reconcile with Qatom"}
+              <button type="button" onClick={() => reconcile(p.id)} className="btn-ghost min-h-[44px] px-3 text-[12px] text-amber-200">
+                {p.recovery === "DELIVERY_FAILED" ? "Re-request delivery" : "Reconcile with rail"}
               </button>
             )}
           </div>
@@ -182,7 +187,7 @@ export function TransactionStream({ s, onReview, onInspect }: { s: State; onRevi
       <h2 id="stream-h" className="flex items-center gap-2.5 text-[14px] font-semibold tracking-tight">
         <span className={`h-1.5 w-1.5 rounded-full ${locked ? "bg-amber-600" : "pulse-dot bg-emerald-400"}`} aria-hidden="true" />
         Live event pipeline
-        <span className="font-mono text-[10.5px] font-normal text-slate-500">agent intent → mandate evaluation → qatom rail</span>
+        <span className="font-mono text-[10.5px] font-normal text-slate-500">agent intent → mandate evaluation → payment rail</span>
       </h2>
       <div role="tablist" aria-label="Filter events" className="well flex max-w-full gap-0.5 overflow-x-auto rounded-md p-[3px]">
         {FILTERS.map(([f, label]) => (
@@ -193,7 +198,7 @@ export function TransactionStream({ s, onReview, onInspect }: { s: State; onRevi
       </div>
     </div>
 
-    <div aria-live="polite" className="sr-only">{last?.detail}</div>
+    <div aria-live="polite" className="sr-only">{last?.detail ?? (s.purchases[0] ? `${s.purchases[0].itemLabel}: ${stageBadge(s.purchases[0]).label}` : "")}</div>
     <div aria-live="assertive" role="alert" className="sr-only">{assertive}</div>
 
     {shown.length === 0 ? (

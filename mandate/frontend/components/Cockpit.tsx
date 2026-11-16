@@ -2,13 +2,15 @@
 
 // Operator cockpit: header, policy matrix, transaction stream, and the bottom deck.
 import { useEffect, useRef, useState } from "react";
+import { MotionConfig } from "motion/react";
 import { CockpitHeader } from "./CockpitHeader";
 import { EscalationDrawer } from "./EscalationDrawer";
 import { EvidenceModal } from "./EvidenceModal";
 import { KillSwitch, RevocationSlip } from "./KillSwitch";
 import { PolicyMatrix } from "./PolicyMatrix";
+import { SessionKeysPanel, WalletPanel } from "./LivePanels";
 import { TransactionStream } from "./TransactionStream";
-import { isLive, release, reset, run, scenarioAvailable, useMandate, useMode } from "@/lib/mandate";
+import { clearNotice, isLive, release, reloadState, reset, run, scenarioAvailable, useLive, useMandate, useMode, useNotice } from "@/lib/mandate";
 import type { ScenarioKey } from "@/lib/mandate";
 
 const TRIGGERS: { k: ScenarioKey; label: string; led: string }[] = [
@@ -22,6 +24,8 @@ const TRIGGERS: { k: ScenarioKey; label: string; led: string }[] = [
 export function Cockpit() {
   const s = useMandate();
   const mode = useMode();
+  const x = useLive();
+  const notice = useNotice();
   const locked = s.policy.paused;
   const [kill, setKill] = useState(false);
   const [reviewId, setReviewId] = useState<string | null>(null);
@@ -56,8 +60,36 @@ export function Cockpit() {
   const inspect = s.purchases.find((p) => p.id === inspectId) ?? null;
 
   return (
+    <MotionConfig reducedMotion="user">
     <div data-locked={locked} className="relative flex min-h-screen flex-col">
       <CockpitHeader s={s} mode={mode} onKill={() => setKill(true)} />
+
+      {/* Connection and action status. Polite, so it never interrupts a screen reader mid-sentence. */}
+      <div role="status" aria-live="polite" aria-atomic="true">
+        {(notice && notice.kind !== "ok") || mode === "signin" ? (
+          <div className={`border-b ${notice?.kind === "conflict" || mode === "signin" ? "border-amber-700/50 bg-[#140d05] text-amber-300" : "border-rose-700/40 bg-[#14070b] text-rose-300"}`}>
+            <div className="mx-auto flex max-w-[1600px] flex-wrap items-center gap-3 px-5 py-2 text-[13px] lg:px-8">
+              <span className="min-w-0 flex-1">
+                {mode === "signin" && notice?.kind !== "conflict"
+                  ? "Sign in needed. The gateway refused the owner token, so the simulated ledger is shown. Set NEXT_PUBLIC_MANDATE_OWNER_TOKEN for local development."
+                  : notice?.text}
+              </span>
+              {notice?.kind === "conflict" && (
+                <button type="button" className="btn-amber" onClick={() => { void reloadState(); clearNotice(); }}>
+                  Reload rules
+                </button>
+              )}
+              {notice && (
+                <button type="button" className="btn-ghost" aria-label="Dismiss message" onClick={clearNotice}>
+                  Dismiss
+                </button>
+              )}
+            </div>
+          </div>
+        ) : notice ? (
+          <p className="sr-only">{notice.text}</p>
+        ) : null}
+      </div>
 
       {locked && (
         <div className="border-b border-amber-700/50 bg-[#140d05]">
@@ -69,8 +101,10 @@ export function Cockpit() {
       )}
 
       <div className={`relative mx-auto grid w-full max-w-[1600px] flex-1 gap-5 px-5 pt-5 lg:grid-cols-[372px_minmax(0,1fr)] lg:px-8 ${locked ? "pb-64" : "pb-32"}`}>
-        <aside className="self-start lg:sticky lg:top-[84px]">
+        <aside className="space-y-3 self-start">
           <PolicyMatrix s={s} />
+          {x && <SessionKeysPanel x={x} s={s} />}
+          {x && <WalletPanel x={x} s={s} />}
         </aside>
 
         <TransactionStream s={s} onReview={setReviewId} onInspect={setInspectId} />
@@ -92,7 +126,7 @@ export function Cockpit() {
               Reset
             </button>
           ) : (
-            <span className="ml-auto shrink-0 font-mono text-[10.5px] text-slate-500">{mode === "live" ? "live gateway · mock rail" : "connecting…"}</span>
+            <span className="ml-auto shrink-0 font-mono text-[10.5px] text-slate-500">{mode === "live" ? `live gateway · ${x?.rail ?? "?"} rail` : mode === "signin" ? "sign in needed" : "connecting…"}</span>
           )}
         </div>
       </div>
@@ -107,5 +141,6 @@ export function Cockpit() {
         </div>
       )}
     </div>
+    </MotionConfig>
   );
 }
