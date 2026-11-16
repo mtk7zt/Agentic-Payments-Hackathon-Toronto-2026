@@ -1,0 +1,64 @@
+# Mock-only CI (MND-03). No secrets, no network rails, no payment can be made from a PR.
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  MANDATE_RAIL: mock          # the only rail CI may use
+  GOAT_FLOW_API_KEY: ""       # explicitly empty: a live call would fail closed
+  GOAT_FLOW_API_SECRET: ""
+  QATOM_TOKEN_FILE: /nonexistent
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mandate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: mandate/backend/requirements.txt
+      - run: pip install -r backend/requirements.txt ruff
+      - run: ruff check backend scripts
+      - run: python -m pytest -q
+      - name: Smoke (mock rail)
+        run: python scripts/smoke.py   # --scenarios exits 1 by design, so it is covered by pytest instead
+      - name: Attack scenarios (mock rail)
+        run: python -m scripts.attacks
+
+  frontend:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    defaults:
+      run:
+        working-directory: mandate/frontend
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: mandate/frontend/package-lock.json
+      - run: npm ci
+      - run: npx tsc --noEmit
+      - run: for f in tests/*.cjs; do node "$f"; done
+      - run: npx next build
