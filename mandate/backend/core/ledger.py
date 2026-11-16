@@ -76,6 +76,11 @@ CREATE TABLE IF NOT EXISTS dispatch_claims (
   state TEXT NOT NULL CHECK (state IN ('CLAIMED','SETTLED','UNKNOWN','UNPAID')),
   created_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS rail_approvals (
+  approval_id TEXT PRIMARY KEY, rail TEXT NOT NULL, dispatch_key TEXT NOT NULL,
+  context_json TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('PENDING','RESOLVED')),
+  created_at REAL NOT NULL
+);
 CREATE TABLE IF NOT EXISTS events (
   seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, actor TEXT NOT NULL,
   purchase_id TEXT, amount INTEGER, clause TEXT, ref TEXT, detail TEXT NOT NULL,
@@ -120,6 +125,7 @@ class Ledger:
         self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
         self.sessions = SessionKeys(self.conn)
         if not self.conn.execute("SELECT 1 FROM mandate WHERE id=?", (mandate_id,)).fetchone():
             with self._tx():
@@ -127,6 +133,36 @@ class Ledger:
                 self.conn.execute("INSERT INTO mandate(id, agent_id, policy_json) VALUES (?,?,?)",
                                   (mandate_id, agent_id, pol.canonical()))
                 self._emit("POLICY_SNAPSHOT", "owner", detail=f"Policy v{pol.version} snapshot")
+
+    # Columns added after the first release. Older databases get them on open; existing rows stay valid (NULL).
+    _ADDED_PURCHASE_COLUMNS = (("rail", "TEXT"), ("approval_id", "TEXT"), ("rail_tx_id", "TEXT"))
+
+    def _migrate(self) -> None:
+        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(purchases)")}
+        for name, kind in self._ADDED_PURCHASE_COLUMNS:
+            if name not in have:
+                self.conn.execute(f"ALTER TABLE purchases ADD COLUMN {name} {kind}")
+
+    # ───────── rail approvals (MND-32) ─────────
+    # A rail can ask the owner to approve before it pays (Qatom does). The context needed to resume
+    # that exact checkout is stored here, so a gateway restart cannot lose a pending approval.
+
+    def save_rail_approval(self, approval_id: str, *, rail: str, dispatch_key: str, context: dict[str, Any]) -> None:
+        with self._lock:
+            self.conn.execute(
+                "INSERT OR IGNORE INTO rail_approvals(approval_id,rail,dispatch_key,context_json,state,created_at) "
+                "VALUES (?,?,?,?, 'PENDING', ?)",
+                (approval_id, rail, dispatch_key, canonical(context), time.time()))
+
+    def rail_approval(self, approval_id: str) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute("SELECT * FROM rail_approvals WHERE approval_id=? AND state='PENDING'",
+                                    (approval_id,)).fetchone()
+        return None if row is None else {**dict(row), "context": json.loads(row["context_json"])}
+
+    def resolve_rail_approval(self, approval_id: str) -> None:
+        with self._lock:
+            self.conn.execute("UPDATE rail_approvals SET state='RESOLVED' WHERE approval_id=?", (approval_id,))
 
     # ───────── transaction plumbing ─────────
 
@@ -583,7 +619,7 @@ class Ledger:
                        purchase_id=purchase_id, amount=p["amount"], detail="No money moved")
             self._emit("HOLD_RELEASED", "gateway", purchase_id=purchase_id, amount=p["amount"], detail="Hold released")
 
-    def claim_dispatch(self, purchase_id: str) -> str:
+    def claim_dispatch(self, purchase_id: str, rail: str | None = None) -> str:
         """Record intent to pay BEFORE calling the rail. Exactly one claim per purchase."""
         with self._tx():
             p = self._purchase(purchase_id)
@@ -603,6 +639,8 @@ class Ledger:
             except sqlite3.IntegrityError as exc:
                 raise LedgerError("dispatch already claimed") from exc
             self._stage(purchase_id, Stage.DISPATCHED)
+            if rail:
+                self.conn.execute("UPDATE purchases SET rail=? WHERE id=?", (rail, purchase_id))
             self._emit("DISPATCH_CLAIMED", "executor", purchase_id=purchase_id, amount=p["amount"], ref=key,
                        detail="Claim recorded before calling the rail")
             return key
@@ -624,17 +662,18 @@ class Ledger:
                               (p["amount"], p["amount"], self.mandate_id))
             self.conn.execute("UPDATE dispatch_claims SET state='SETTLED' WHERE purchase_id=?", (purchase_id,))
             self._stage(purchase_id, Stage.SETTLED, rail_order_id=rail_order_id, delivery="PENDING")
+            self.conn.execute("UPDATE purchases SET rail_tx_id=? WHERE id=?", (rail_order_id, purchase_id))
             self._emit("PAYMENT_SETTLED", "executor", purchase_id=purchase_id, amount=p["amount"], ref=rail_order_id,
                        detail="Hold moved to settled once")
             return True
 
-    def attach_order(self, purchase_id: str, rail_order_id: str) -> None:
-        """Remember the rail's order id for a dispatched purchase that is not settled yet."""
+    def attach_order(self, purchase_id: str, rail_order_id: str, approval_id: str | None = None) -> None:
+        """Remember the rail's order id (and any rail approval id) for a dispatched, unsettled purchase."""
         with self._tx():
             if self._purchase(purchase_id)["stage"] != Stage.DISPATCHED.value:
                 raise LedgerError("not dispatched")
-            self.conn.execute("UPDATE purchases SET rail_order_id=?, updated_at=? WHERE id=?",
-                              (rail_order_id, time.time(), purchase_id))
+            self.conn.execute("UPDATE purchases SET rail_order_id=?, approval_id=COALESCE(?, approval_id), "
+                              "updated_at=? WHERE id=?", (rail_order_id, approval_id, time.time(), purchase_id))
 
     def mark_unknown(self, purchase_id: str, why: str) -> None:
         """Rail did not answer. Keep the hold; forbid a blind retry."""

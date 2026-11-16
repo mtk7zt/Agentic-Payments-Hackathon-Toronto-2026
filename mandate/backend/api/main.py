@@ -44,7 +44,7 @@ app.add_middleware(
 ledger = Ledger(os.environ.get("MANDATE_DB", ":memory:"))
 if not ledger.policy().whitelisted_sellers:
     ledger.set_policy(whitelisted_sellers=DEMO_SELLERS)
-rail = rail_from_env()
+rail = rail_from_env(store=ledger)
 seller = seller_from_env()
 
 

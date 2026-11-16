@@ -26,7 +26,7 @@ def _deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> None:
 
 def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str) -> dict[str, Any]:
     """Pay for a RESERVED purchase. Safe to call once; a second call cannot claim again."""
-    claim_key = ledger.claim_dispatch(purchase_id)  # durable intent, before any money moves
+    claim_key = ledger.claim_dispatch(purchase_id, getattr(rail, "name", None))  # durable intent, before any money moves
     p0 = ledger.purchase(purchase_id)
     amount = p0["amount"]
     try:
@@ -44,7 +44,7 @@ def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str)
         ledger.close_unpaid(purchase_id, res.status or "rail refused the order")
     elif res.outcome is RailOutcome.PENDING and res.order_id:
         # Order exists; payment not yet confirmed. Stay DISPATCHED until reconcile() sees it settle.
-        ledger.attach_order(purchase_id, res.order_id)
+        ledger.attach_order(purchase_id, res.order_id, (res.raw or {}).get("approval_id"))
     else:
         ledger.mark_unknown(purchase_id, "Rail gave no trustworthy answer")
     return ledger.purchase(purchase_id)
@@ -66,7 +66,8 @@ def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: st
         return ledger.purchase(purchase_id)  # operator must establish the original order
     res = rail.get_order(order_id)
     if res.outcome is RailOutcome.SETTLED:
-        ledger.settle(purchase_id, order_id)
+        # A rail may answer with the final transaction id (Qatom: approval ref -> transaction id).
+        ledger.settle(purchase_id, res.order_id or order_id)
         _deliver(ledger, seller, purchase_id)
     elif res.outcome is RailOutcome.UNPAID:
         ledger.close_unpaid(purchase_id, res.status or "unpaid")

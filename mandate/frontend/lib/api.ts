@@ -68,6 +68,12 @@ export interface PurchaseDTO {
   expires_at: number | null; // Unix seconds
   approved_by_human: number;
   rail_order_id: string | null;
+  /** Rail that handled the purchase (mock, goat-flow-x402, qatom). Null until dispatched. */
+  rail?: string | null;
+  /** Rail-side approval id while the owner approves in the provider (Qatom). */
+  approval_id?: string | null;
+  /** Final transaction id once settled. */
+  rail_tx_id?: string | null;
   delivery: "NONE" | "PENDING" | "VERIFIED" | "FAILED";
   created_at: number; // Unix seconds
   updated_at: number;

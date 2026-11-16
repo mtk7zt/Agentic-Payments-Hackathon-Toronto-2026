@@ -9,3 +9,5 @@ First real purchase: 16 November 2026, 10:32 ET, item 22 "BTC Options Market Rea
 5. There is no client idempotency key and no order lookup tool, so an unanswered call is UNKNOWN and goes to reconciliation; Mandate never retries it.
 
 `backend/services/qatom_rail.py` implements this: PENDING with `qatom-approval:<id>` while the owner decides, SETTLED with the transaction id, UNKNOWN if the charge exceeds the reservation. Mandate's rules run first, so blocked requests make zero Qatom calls.
+
+The context needed to resume an approved checkout (item, arguments, reserved amount) is stored in the ledger's `rail_approvals` table, not in memory, so a gateway restart does not lose a pending approval. Each purchase records `rail`, `approval_id`, `rail_order_id` and the final `rail_tx_id`. If the context is missing, the rail answers `APPROVAL_CONTEXT_LOST` (UNKNOWN) and the hold is kept for the owner to resolve.
