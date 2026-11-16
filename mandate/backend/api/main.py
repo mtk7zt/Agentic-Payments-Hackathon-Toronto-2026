@@ -28,6 +28,7 @@ from ..models.purchase import PurchaseIn
 from ..services import orchestrator
 from ..services.payment_rail import rail_from_env
 from ..services.seller import seller_from_env
+from . import ops
 from .streams import GRANT_SECONDS, mint_grant, read_grant, stream_frames
 
 # Seeded into an empty whitelist in sandbox mode only.
@@ -36,8 +37,12 @@ SANDBOX_SELLERS = {
     "seller-b.example": "0x00000000000000000000000000000000000000b2",
 }
 
+ops.install_json_logging()  # one JSON line per log record on the `mandate` logger tree (docs/OPERATIONS.md)
 log = logging.getLogger("mandate.api")
 settings = load_settings()  # raises ConfigError, listing every problem, before anything else starts
+ops.check_rate_limit_config(settings.mode)  # fails now if a limit is malformed; warns if disabled in production
+rate_limiter: ops.RateLimiter = ops.InMemoryTokenBucket()  # swap for a shared implementation; routes never change
+idempotency_store: ops.IdempotencyStore = ops.InMemoryIdempotencyStore()
 app = FastAPI(title="Mandate gateway", version="0.1.0")
 class CatchUnexpected:
     """Turns an unhandled error into a JSON 500 *inside* the CORS layer, so the browser still sees CORS
@@ -64,13 +69,20 @@ class CatchUnexpected:
             await JSONResponse({"detail": "internal error"}, status_code=500)(scope, receive, send)
 
 
-app.add_middleware(CatchUnexpected)  # added first, so CORS (added next) wraps it
+# Middleware order (first added = innermost): errors, idempotent replay, rate limit, CORS, request id + log.
+# The rate limiter and the idempotency layer sit inside CORS so their 429 and 422 still carry CORS headers;
+# the request-id layer is outermost so every response, preflights included, is logged and tagged.
+app.add_middleware(CatchUnexpected)
+app.add_middleware(ops.IdempotencyMiddleware, store=idempotency_store)
+app.add_middleware(ops.RateLimitMiddleware, limiter=rate_limiter)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=list(settings.cors_origins),
     allow_methods=["*"], allow_headers=["*"],
     allow_credentials=True,
+    expose_headers=["X-Request-ID", "Retry-After", "Idempotent-Replayed"],
 )
+app.add_middleware(ops.RequestContextMiddleware)
 
 ledger = Ledger(settings.database_url)
 if settings.sandbox and not ledger.policy().whitelisted_sellers:
@@ -145,6 +157,24 @@ def guard(fn, *args, **kwargs):
 @app.get("/health")
 def health() -> dict[str, str]:
     return {"status": "ok", "rail": rail.name, "mode": settings.mode}
+
+
+@app.get("/live")
+def live() -> dict[str, bool]:
+    """Liveness: the process answers. Never touches storage."""
+    return {"live": True}
+
+
+@app.get("/ready")
+def ready() -> JSONResponse:
+    """Readiness: one trivial ledger read. 503 {"ready": false} until storage answers, with no reason leaked."""
+    try:
+        with ledger.snapshot():
+            ledger.policy()
+    except Exception:
+        log.warning("readiness check failed", exc_info=True)
+        return JSONResponse({"ready": False}, status_code=503)
+    return JSONResponse({"ready": True})
 
 
 @app.get("/api/v1/state", dependencies=[Depends(owner)])
