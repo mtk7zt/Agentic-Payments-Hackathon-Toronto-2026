@@ -2,6 +2,7 @@
 """MND-27 · CLI smoke test for checkout and receipt logging.
 
     python scripts/smoke.py            # mock rail, no network, no money
+    python scripts/smoke.py --scenarios # five mock scenarios; UNKNOWN exits 1
     python scripts/smoke.py --live     # ONE real GOAT Flow Testnet3 order (needs GOAT_FLOW_* env)
 
 Exits non-zero if any purchase ends in an unexpected state or the evidence chain is broken.
@@ -12,6 +13,7 @@ import argparse
 import json
 import pathlib
 import sys
+import uuid
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[1]))
 
@@ -34,22 +36,38 @@ B = ("seller-b.example", "0x00000000000000000000000000000000000000b2")
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--live", action="store_true", help="create one real Testnet3 order")
+    ap.add_argument("--scenarios", action="store_true", help="five mock cases; intentional UNKNOWN exits 1")
     args = ap.parse_args()
+    if args.live and args.scenarios:
+        ap.error("--scenarios is mock-only")
 
-    ledger = Ledger(":memory:")
+    try:
+        if args.live:
+            config = GoatFlowConfig.from_env()
+            config.require()
+            if config.api_url != "https://flow-api.testnet3.goat.network" or config.chain_id != 48816:
+                raise ValueError("Testnet3 origin and chain required")
+            rail = GoatFlowRail(config)
+        else:
+            rail = MockRail({"0005": RailOutcome.UNKNOWN} if args.scenarios else {})
+    except (RuntimeError, ValueError):
+        print("FAIL live configuration: supply Testnet3 credentials, origin and chain 48816", file=sys.stderr)
+        return 2
+
+    invocation = uuid.uuid4().hex if args.live else "mock"
+    ledger = Ledger(":memory:", mandate_id=f"smoke-{invocation}")
     ledger.set_policy(whitelisted_sellers=dict([A, B]))
     key_id, _ = ledger.issue_session_key()
     seller = MockSeller(fail_items={"lane-rates"})
-    rail = GoatFlowRail(GoatFlowConfig.from_env()) if args.live else MockRail({"0005": RailOutcome.UNKNOWN})
 
     def buy(n, dom, addr, item, amount):
-        return orchestrator.submit(ledger, rail, seller, request_key=f"smoke-{n:04d}-key",
+        return orchestrator.submit(ledger, rail, seller, request_key=f"smoke-{invocation}-{n:04d}-key",
                                    intent=Intent(dom, addr, item, amount),
                                    tool_call={"tool": "buy_supplier_data", "vendor": dom, "item": item},
                                    session_key_id=key_id)
 
-    if args.live:
-        cases = [("micro purchase", buy(1, *A, "shipping-estimate", 40), None)]
+    if not args.scenarios:
+        cases = [("micro purchase", buy(1, *A, "shipping-estimate", 40), "VERIFIED")]
     else:
         cases = [
             ("micro purchase", buy(1, *A, "shipping-estimate", 40), "VERIFIED"),
@@ -67,12 +85,12 @@ def main() -> int:
 
     ok = True
     for name, p, want in cases:
-        good = want is None or p["stage"] == want
+        good = p["stage"] == want and p["stage"] != "RECOVERY_UNKNOWN"
         ok &= good
         print(f"{'PASS' if good else 'FAIL'}  {name:28} {format_milli(p['amount']):>7}  {p['stage']:22} "
               f"{p['clause'] or ''}  order={p['rail_order_id'] or '-'}")
 
-    if not args.live:
+    if args.scenarios:
         calls_before = rail.create_calls
         try:
             orchestrator.execute(ledger, rail, seller, cases[4][1]["id"])  # a blind retry must be refused
@@ -84,7 +102,13 @@ def main() -> int:
 
     bal, chain = ledger.balances(), ledger.verify_chain()
     ok &= chain["intact"] and bal["available"] + bal["held"] + bal["settled"] == bal["budget"]
-    print("\nreceipt", json.dumps({"rail": rail.name, "balances_milli": bal, "chain": chain}, indent=2))
+    stored = [{"id": p["id"], "request_key": p["request_key"], "seller_domain": p["seller_domain"],
+               "item": p["item"], "amount": format_milli(p["amount"]), "amount_milli": p["amount"],
+               "stage": p["stage"], "rail_order_id": p["rail_order_id"], "delivery": p["delivery"]}
+              for p in ledger.purchases()]
+    print("\nreceipt", json.dumps({"rail": rail.name, "synthetic_seller": True, "purchases": stored,
+                                   "balances_milli": bal, "chain": chain}, indent=2))
+    ledger.conn.close()
     return 0 if ok else 1
 
 

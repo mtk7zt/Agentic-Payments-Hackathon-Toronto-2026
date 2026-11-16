@@ -39,7 +39,8 @@ docs/MANDATE_SYSTEM_GUIDE.md  plain-language guide for judges (PDF exports along
 python -m venv .venv && source .venv/bin/activate
 pip install -r backend/requirements.txt
 python -m pytest                      # backend regression suite
-python scripts/smoke.py               # mock rail, five scenarios, prints a receipt
+python scripts/smoke.py               # one mock checkout, prints the stored receipt
+python scripts/smoke.py --scenarios   # five mock cases; deliberate UNKNOWN exits 1
 uvicorn backend.api.main:app --reload # http://localhost:8000/docs
 
 # frontend
