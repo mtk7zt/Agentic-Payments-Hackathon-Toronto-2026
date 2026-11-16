@@ -6,9 +6,9 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        canvas: "#020617", // slate-950
-        surface: { DEFAULT: "#0f172a", raised: "#1e293b" }, // slate-900 / 800
-        content: { DEFAULT: "#f1f5f9", secondary: "#94a3b8", inverse: "#020617" },
+        canvas: "var(--mandate-canvas)",
+        surface: { DEFAULT: "var(--mandate-surface)", raised: "var(--mandate-raised)" },
+        content: { DEFAULT: "var(--mandate-content)", secondary: "var(--mandate-secondary)", inverse: "#020617" },
         status: {
           success: { DEFAULT: "#10b981", text: "#34d399" },
           warning: { DEFAULT: "#f59e0b", text: "#fbbf24" },
@@ -23,7 +23,7 @@ const config: Config = {
         mono: ["JetBrains Mono", "ui-monospace", "monospace"],
       },
       ringColor: { focus: "#10b981" },
-      ringOffsetColor: { canvas: "#020617" },
+      ringOffsetColor: { canvas: "var(--mandate-canvas)" },
     },
   },
   plugins: [],
