@@ -101,6 +101,7 @@ def test_twelve_settlement_callbacks_commit_only_once(tmp_path):
 
 CRASH_WORKER = """
 import os, sys
+from backend.tests.pgmap import install; install()  # PostgreSQL runs map paths the same way
 from pathlib import Path
 from backend.core.ledger import Ledger
 from backend.core.policy import Intent
@@ -129,16 +130,17 @@ def test_abrupt_worker_exit_never_authorizes_blind_resend(tmp_path, phase):
     assert result.returncode == 29, result.stderr
     reopened = Ledger(path)
     rail = MockRail()
+    pid = reopened.purchases()[0]["id"]
     try:
         if phase == "before_claim":
             # No durable claim and no send occurred; first dispatch remains legal.
-            orchestrator.execute(reopened, rail, MockSeller(), "pur_0001")
+            orchestrator.execute(reopened, rail, MockSeller(), pid)
             assert rail.create_calls == 1
             invariant(reopened, 0, 40)
         else:
             with pytest.raises(LedgerError):
-                orchestrator.execute(reopened, rail, MockSeller(), "pur_0001")
-            recovered = orchestrator.reconcile(reopened, rail, MockSeller(), "pur_0001")
+                orchestrator.execute(reopened, rail, MockSeller(), pid)
+            recovered = orchestrator.reconcile(reopened, rail, MockSeller(), pid)
             assert recovered["stage"] == "RECOVERY_UNKNOWN" and rail.create_calls == 0
             invariant(reopened, 40, 0)
             assert any(e["type"] == "OUTCOME_UNKNOWN" for e in reopened.events())

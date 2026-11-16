@@ -1,5 +1,4 @@
 """Crash boundaries use a file ledger and independent SQLite connections."""
-import sqlite3
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor
@@ -12,6 +11,8 @@ from backend.core.policy import Intent, Policy
 from backend.services import orchestrator
 from backend.services.payment_rail import MockRail
 from backend.services.seller import MockSeller
+
+from .dbtools import inject_failure, remove_failure
 
 
 @pytest.fixture
@@ -50,6 +51,7 @@ def test_abrupt_worker_exit_does_not_authorize_redelivery(store, tmp_path, send_
     receipt = tmp_path / "external-order.txt"
     script = """
 import os
+from backend.tests.pgmap import install; install()  # PostgreSQL runs map paths the same way
 import sys
 from pathlib import Path
 from backend.core.ledger import Ledger
@@ -120,10 +122,9 @@ def test_event_failure_rolls_back_claim_or_settlement_on_disk(store, boundary):
     if boundary == "PAYMENT_SETTLED":
         led.claim_dispatch(pid)
     before = (led.purchase(pid), led.balances(), led.events())
-    led.conn.execute(f"""CREATE TRIGGER fail_boundary BEFORE INSERT ON events
-        WHEN NEW.type='{boundary}' BEGIN SELECT RAISE(ABORT, 'injected disk failure'); END""")
+    inject_failure(led.conn, "fail_boundary", "events", "injected disk failure", event_type=boundary)
     try:
-        with pytest.raises(sqlite3.IntegrityError, match="injected disk failure"):
+        with pytest.raises(led.conn.IntegrityError, match="injected disk failure"):
             if boundary == "DISPATCH_CLAIMED":
                 led.claim_dispatch(pid)
             else:
@@ -133,7 +134,7 @@ def test_event_failure_rolls_back_claim_or_settlement_on_disk(store, boundary):
     reopened = Ledger(path)
     try:
         assert (reopened.purchase(pid), reopened.balances(), reopened.events()) == before
-        reopened.conn.execute("DROP TRIGGER fail_boundary")
+        remove_failure(reopened.conn, "fail_boundary", "events")
         if boundary == "DISPATCH_CLAIMED":
             reopened.claim_dispatch(pid)
         assert reopened.settle(pid, "original-order") is True

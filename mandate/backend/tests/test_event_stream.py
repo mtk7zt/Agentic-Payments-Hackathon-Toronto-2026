@@ -8,6 +8,8 @@ from backend.api import main as gateway
 from backend.api.streams import mint_grant, read_grant, stream_frames
 from backend.core.ledger import Ledger
 
+from .dbtools import drop_append_only
+
 
 def test_signed_grants_are_scoped_expiring_and_rotation_bound():
     secret = secrets.token_urlsafe(32)
@@ -125,7 +127,7 @@ def test_cursor_ahead_or_gap_requests_full_refresh(api):
     _, ledger, _ = api
     assert "event: stream.reset" in "".join(collect(ledger, 100))
     ledger.issue_session_key()
-    ledger.conn.execute("DROP TRIGGER events_no_delete")
+    drop_append_only(ledger.conn)
     ledger.conn.execute("DELETE FROM events WHERE seq=1")
     assert "event: stream.reset" in "".join(collect(ledger, 0))
 

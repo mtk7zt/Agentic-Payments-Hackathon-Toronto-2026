@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import hashlib
 import secrets
-import sqlite3
 from enum import Enum
+from typing import Any
+
+from .ids import ulid
 
 
 class SessionState(str, Enum):
@@ -24,13 +26,12 @@ def _digest(token: str) -> str:
 class SessionKeys:
     """Operates on the ledger's connection so key changes share its transactions."""
 
-    def __init__(self, conn: sqlite3.Connection):
+    def __init__(self, conn: Any):
         self.conn = conn
 
     def issue(self, agent_id: str) -> tuple[str, str]:
         """Returns (key_id, token). The token is shown once and never stored."""
-        n = self.conn.execute("SELECT COUNT(*) FROM session_keys WHERE agent_id=?", (agent_id,)).fetchone()[0]
-        key_id = f"sk_{agent_id}_{n + 1:02d}"
+        key_id = f"sk_{agent_id}_{ulid()}"
         token = secrets.token_urlsafe(32)
         self.conn.execute(
             "INSERT INTO session_keys(key_id, agent_id, token_sha256, state) VALUES (?,?,?,?)",

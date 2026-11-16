@@ -13,7 +13,6 @@ import hashlib
 import hmac
 import json
 import os
-import sqlite3
 import threading
 import time
 from collections.abc import Iterator
@@ -23,6 +22,8 @@ from enum import Enum
 from typing import Any
 
 from ..models.money import MoneyError, validate_milli
+from .db import Database, Row, connect
+from .ids import new_id
 from .policy import Clause, Decision, Evaluation, Intent, Policy, evaluate
 from .sessions import SessionKeys, SessionState
 
@@ -50,58 +51,7 @@ class Stage(str, Enum):
 HOLDING = (Stage.PENDING_APPROVAL, Stage.RESERVED, Stage.DISPATCHED, Stage.RECOVERY_UNKNOWN)
 PAID = (Stage.SETTLED, Stage.VERIFIED, Stage.RECOVERY_UNDELIVERED)
 
-SCHEMA = """
-CREATE TABLE IF NOT EXISTS mandate (
-  id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, policy_json TEXT NOT NULL,
-  held INTEGER NOT NULL DEFAULT 0 CHECK (held >= 0),
-  settled INTEGER NOT NULL DEFAULT 0 CHECK (settled >= 0)
-);
-CREATE TABLE IF NOT EXISTS wallet_monitor (
-  mandate_id TEXT PRIMARY KEY, baseline INTEGER NOT NULL, baseline_settled INTEGER NOT NULL,
-  observed INTEGER NOT NULL, observed_settled INTEGER NOT NULL,
-  mismatch INTEGER NOT NULL CHECK (mismatch IN (0,1)), reference TEXT NOT NULL,
-  recorded_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS purchases (
-  id TEXT PRIMARY KEY, mandate_id TEXT NOT NULL, request_key TEXT NOT NULL UNIQUE,
-  fingerprint TEXT NOT NULL, seller_domain TEXT NOT NULL, seller_address TEXT NOT NULL,
-  item TEXT NOT NULL, amount INTEGER NOT NULL CHECK (amount > 0), attempt INTEGER NOT NULL,
-  tool_call_json TEXT NOT NULL, stage TEXT NOT NULL, decision TEXT, clause TEXT,
-  policy_version INTEGER, policy_hash TEXT, session_key_id TEXT, expires_at REAL,
-  approved_by_human INTEGER NOT NULL DEFAULT 0, rail_order_id TEXT, delivery TEXT NOT NULL DEFAULT 'NONE',
-  created_at REAL NOT NULL, updated_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS dispatch_claims (
-  idempotency_key TEXT PRIMARY KEY, purchase_id TEXT NOT NULL UNIQUE,
-  state TEXT NOT NULL CHECK (state IN ('CLAIMED','SETTLED','UNKNOWN','UNPAID')),
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS rail_approvals (
-  approval_id TEXT PRIMARY KEY, rail TEXT NOT NULL, dispatch_key TEXT NOT NULL,
-  context_json TEXT NOT NULL, state TEXT NOT NULL CHECK (state IN ('PENDING','RESOLVED')),
-  created_at REAL NOT NULL
-);
-CREATE TABLE IF NOT EXISTS events (
-  seq INTEGER PRIMARY KEY, ts INTEGER NOT NULL, type TEXT NOT NULL, actor TEXT NOT NULL,
-  purchase_id TEXT, amount INTEGER, clause TEXT, ref TEXT, detail TEXT NOT NULL,
-  policy_hash TEXT NOT NULL, prev TEXT NOT NULL, hash TEXT NOT NULL UNIQUE
-);
-CREATE TABLE IF NOT EXISTS session_keys (
-  key_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, state TEXT NOT NULL
-);
-CREATE TABLE IF NOT EXISTS evidence_checkpoints (
-  id TEXT PRIMARY KEY, mandate_id TEXT NOT NULL, seq INTEGER NOT NULL, checkpoint_json TEXT NOT NULL
-);
-CREATE TRIGGER IF NOT EXISTS checkpoints_no_update BEFORE UPDATE ON evidence_checkpoints
-BEGIN SELECT RAISE(ABORT, 'checkpoints are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS checkpoints_no_delete BEFORE DELETE ON evidence_checkpoints
-BEGIN SELECT RAISE(ABORT, 'checkpoints are append-only'); END;
--- The application role may append evidence but never rewrite it.
-CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
-BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
-CREATE TRIGGER IF NOT EXISTS events_no_delete BEFORE DELETE ON events
-BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
-"""
+# The schema lives in core/migrations.py, one versioned migration per change, for SQLite and PostgreSQL.
 
 
 def canonical(body: dict[str, Any]) -> str:
@@ -114,7 +64,10 @@ def event_hash(prev: str, body: dict[str, Any]) -> str:
 
 class Ledger:
     def __init__(self, path: str = ":memory:", mandate_id: str = "mnd_acme_04", agent_id: str = "agent04",
-                 policy: Policy | None = None, *, checkpoint_key: str | None = None, checkpoint_interval: int = 10):
+                 policy: Policy | None = None, *, checkpoint_key: str | None = None, checkpoint_interval: int = 10,
+                 db: Database | None = None):
+        """`path` is a database URL or SQLite path (`postgresql://…`, `sqlite:///file.db`, `file.db`, `:memory:`).
+        Pass `db` to share an already-open database."""
         if type(checkpoint_interval) is not int or checkpoint_interval < 1:
             raise ValueError("checkpoint interval must be a positive integer")
         self._checkpoint_key = os.environ.get("MANDATE_CHECKPOINT_KEY", "") if checkpoint_key is None else checkpoint_key
@@ -122,10 +75,7 @@ class Ledger:
         self.mandate_id = mandate_id
         self.agent_id = agent_id
         self._lock = threading.RLock()
-        self.conn = sqlite3.connect(path, isolation_level=None, check_same_thread=False)
-        self.conn.row_factory = sqlite3.Row
-        self.conn.executescript(SCHEMA)
-        self._migrate()
+        self.conn = db or connect(path)
         self.sessions = SessionKeys(self.conn)
         if not self.conn.execute("SELECT 1 FROM mandate WHERE id=?", (mandate_id,)).fetchone():
             with self._tx():
@@ -133,16 +83,6 @@ class Ledger:
                 self.conn.execute("INSERT INTO mandate(id, agent_id, policy_json) VALUES (?,?,?)",
                                   (mandate_id, agent_id, pol.canonical()))
                 self._emit("POLICY_SNAPSHOT", "owner", detail=f"Policy v{pol.version} snapshot")
-
-    # Columns added after the first release. Older databases get them on open; existing rows stay valid (NULL).
-    _ADDED_PURCHASE_COLUMNS = (("rail", "TEXT"), ("approval_id", "TEXT"), ("rail_tx_id", "TEXT"),
-                               ("approval_digest", "TEXT"))
-
-    def _migrate(self) -> None:
-        have = {r["name"] for r in self.conn.execute("PRAGMA table_info(purchases)")}
-        for name, kind in self._ADDED_PURCHASE_COLUMNS:
-            if name not in have:
-                self.conn.execute(f"ALTER TABLE purchases ADD COLUMN {name} {kind}")
 
     # ───────── rail approvals (MND-32) ─────────
     # A rail can ask the owner to approve before it pays (Qatom does). The context needed to resume
@@ -167,14 +107,14 @@ class Ledger:
 
     # ───────── approval binding (MND-10) ─────────
 
-    def _approval_terms(self, p: sqlite3.Row, policy_version: int) -> dict[str, Any]:
+    def _approval_terms(self, p: Row, policy_version: int) -> dict[str, Any]:
         """What the owner is approving. Any change to these makes the approval invalid."""
         return {"purchase_id": p["id"], "mandate_id": self.mandate_id, "seller_domain": p["seller_domain"],
                 "seller_address": p["seller_address"], "item": p["item"], "amount_milli": p["amount"],
                 "arguments_sha256": hashlib.sha256(p["tool_call_json"].encode()).hexdigest(),
                 "policy_version": policy_version}
 
-    def _approval_digest(self, p: sqlite3.Row, policy_version: int) -> str:
+    def _approval_digest(self, p: Row, policy_version: int) -> str:
         return hashlib.sha256(canonical(self._approval_terms(p, policy_version)).encode()).hexdigest()
 
     def approval_summary(self, purchase_id: str) -> dict[str, Any]:
@@ -186,7 +126,7 @@ class Ledger:
             return {**self._approval_terms(p, p["policy_version"]), "digest": p["approval_digest"],
                     "expires_at": p["expires_at"]}
 
-    def _check_binding(self, p: sqlite3.Row) -> None:
+    def _check_binding(self, p: Row) -> None:
         """The stored digest must still describe this row under the current policy version."""
         if not p["approval_digest"]:
             return  # created before MND-10; the policy recheck still applies
@@ -200,15 +140,9 @@ class Ledger:
 
     @contextmanager
     def _tx(self) -> Iterator[None]:
-        with self._lock:
-            self.conn.execute("BEGIN IMMEDIATE")
-            try:
-                yield
-                self._check()
-                self.conn.execute("COMMIT")
-            except BaseException:
-                self.conn.execute("ROLLBACK")
-                raise
+        with self._lock, self.conn.write_transaction():
+            yield
+            self._check()
 
     def _check(self) -> None:
         m = self._mandate()
@@ -224,7 +158,7 @@ class Ledger:
         if pol.task_budget_cap - m["held"] - m["settled"] < 0:
             raise LedgerError("invariant: allocation overdrawn")
 
-    def _mandate(self) -> sqlite3.Row:
+    def _mandate(self) -> Row:
         with self._lock:
             return self.conn.execute("SELECT * FROM mandate WHERE id=?", (self.mandate_id,)).fetchone()
 
@@ -253,7 +187,7 @@ class Ledger:
         if self._checkpoint_key and body["seq"] % self._checkpoint_interval == 0:
             self._store_checkpoint()
 
-    def _purchase(self, purchase_id: str) -> sqlite3.Row:
+    def _purchase(self, purchase_id: str) -> Row:
         row = self.conn.execute("SELECT * FROM purchases WHERE id=?", (purchase_id,)).fetchone()
         if not row:
             raise LedgerError(f"unknown purchase {purchase_id}")
@@ -303,7 +237,8 @@ class Ledger:
     def latest_checkpoint(self) -> dict[str, Any] | None:
         with self._lock:
             row = self.conn.execute(
-                "SELECT checkpoint_json FROM evidence_checkpoints WHERE mandate_id=? ORDER BY seq DESC, rowid DESC LIMIT 1",
+                "SELECT checkpoint_json FROM evidence_checkpoints WHERE mandate_id=? "
+                "ORDER BY seq DESC, COALESCE(issued_at_ms, 0) DESC, id DESC LIMIT 1",
                 (self.mandate_id,)).fetchone()
             return json.loads(row[0]) if row else None
 
@@ -320,8 +255,9 @@ class Ledger:
         body["ref"] = "sha256:" + hashlib.sha256(canonical(body).encode()).hexdigest()
         signature = hmac.new(self._checkpoint_key.encode(), canonical(body).encode(), hashlib.sha256).hexdigest()
         checkpoint = {**body, "signature": signature}
-        self.conn.execute("INSERT OR IGNORE INTO evidence_checkpoints VALUES (?,?,?,?)",
-                          (body["ref"], self.mandate_id, body["seq"], canonical(checkpoint)))
+        self.conn.execute(
+            "INSERT OR IGNORE INTO evidence_checkpoints(id, mandate_id, seq, checkpoint_json, issued_at_ms) "
+            "VALUES (?,?,?,?,?)", (body["ref"], self.mandate_id, body["seq"], canonical(checkpoint), body["issued_at_ms"]))
         return checkpoint
 
     def create_checkpoint(self) -> dict[str, Any]:
@@ -584,8 +520,7 @@ class Ledger:
                 if prior["mandate_id"] != self.mandate_id or canonical(prior_envelope) != canonical(envelope):
                     raise LedgerError("request_key reused with a different purchase")
                 return dict(prior), False
-            n = self.conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0] + 1
-            pid = f"pur_{n:04d}"
+            pid = new_id("pur")
             # Earlier purchases of this item from this seller inside the policy's rolling window that hold
             # or spent money count as attempts, so a runaway loop hits max_attempts (MND-22) while a
             # weekly household order does not. Stuck recoveries always count, whatever their age.
@@ -608,14 +543,14 @@ class Ledger:
                        detail=f"{saved_tool.get('tool', 'tool')} -> {envelope['seller_domain']}")
             return dict(self._purchase(pid)), True
 
-    def _evaluate_purchase(self, purchase: sqlite3.Row, policy: Policy, available: int) -> Evaluation:
+    def _evaluate_purchase(self, purchase: Row, policy: Policy, available: int) -> Evaluation:
         tool_call = json.loads(purchase["tool_call_json"])
         arguments = tool_call.get("arguments")
         intent = Intent(purchase["seller_domain"], purchase["seller_address"], purchase["item"],
                         purchase["amount"], purchase["attempt"], arguments)
         return evaluate(intent, policy, available, now=time.time())
 
-    def _recheck_reserved_policy(self, purchase: sqlite3.Row, *, require_approval: bool = False) -> None:
+    def _recheck_reserved_policy(self, purchase: Row, *, require_approval: bool = False) -> None:
         # This purchase already holds its allocation; count it back exactly once.
         result = self._evaluate_purchase(purchase, self.policy(), self.balances()["available"] + purchase["amount"])
         if result.decision is Decision.BLOCKED:
@@ -714,7 +649,7 @@ class Ledger:
                 self.conn.execute(
                     "INSERT INTO dispatch_claims(idempotency_key,purchase_id,state,created_at) VALUES (?,?,?,?)",
                     (key, purchase_id, "CLAIMED", time.time()))
-            except sqlite3.IntegrityError as exc:
+            except self.conn.IntegrityError as exc:
                 raise LedgerError("dispatch already claimed") from exc
             self._stage(purchase_id, Stage.DISPATCHED)
             if rail:

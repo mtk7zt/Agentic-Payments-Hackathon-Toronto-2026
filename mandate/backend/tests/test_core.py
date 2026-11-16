@@ -1,6 +1,5 @@
 import hashlib
 import hmac
-import sqlite3
 import threading
 
 import pytest
@@ -22,6 +21,8 @@ from backend.services.payment_rail import (
 )
 from backend.services.seller import MockSeller
 from backend.services.signing import sign, signing_string
+
+from .dbtools import drop_append_only
 
 A = ("seller-a.example", "0xa1")
 POLICY = Policy(whitelisted_sellers={A[0]: A[1]})
@@ -100,7 +101,7 @@ def test_request_key_is_idempotent():
 
 def test_timeout_keeps_hold_and_forbids_second_order():
     led, _key = make()
-    rail = MockRail({"pur_0001": RailOutcome.UNKNOWN})
+    rail = MockRail({"mnd-": RailOutcome.UNKNOWN})  # every order times out
     p = orchestrator.submit(led, rail, MockSeller(), request_key="timeout-key", intent=intent(80), tool_call={})
     assert p["stage"] == Stage.RECOVERY_UNKNOWN.value and led.balances()["held"] == 80
     with pytest.raises(LedgerError):
@@ -150,12 +151,12 @@ def test_evidence_chain_is_append_only_and_tamper_evident():
     led, _key = make()
     orchestrator.submit(led, MockRail(), MockSeller(), request_key="chain-key1", intent=intent(40), tool_call={})
     assert led.verify_chain()["intact"]
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(led.conn.IntegrityError):
         led.conn.execute("UPDATE events SET detail='edited' WHERE seq=2")
-    with pytest.raises(sqlite3.DatabaseError):
+    with pytest.raises(led.conn.IntegrityError):
         led.conn.execute("DELETE FROM events WHERE seq=2")
     # someone with schema access drops the guard and edits history: the hashes give it away
-    led.conn.execute("DROP TRIGGER events_no_update")
+    drop_append_only(led.conn)
     led.conn.execute("UPDATE events SET detail='edited' WHERE seq=2")
     broken = led.verify_chain()
     assert broken["intact"] is False and broken["first_bad_seq"] == 2

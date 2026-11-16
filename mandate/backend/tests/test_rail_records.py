@@ -1,6 +1,8 @@
 """MND-32: every purchase records its rail and ids, and a pending rail approval survives a restart."""
 import sqlite3
 
+import pytest
+
 from backend.core.ledger import Ledger, Stage
 from backend.core.policy import Intent, Policy
 from backend.services import orchestrator
@@ -69,17 +71,29 @@ def test_lost_approval_context_stays_unknown_instead_of_guessing(tmp_path):
     assert rail.mcp.calls == []
 
 
-def test_old_database_gains_new_columns_and_keeps_rows(tmp_path):
+@pytest.mark.sqlite_only
+def test_database_from_before_migrations_upgrades_in_place(tmp_path):
+    """A database written by an earlier release (no schema_migrations, no new columns) opens and keeps its rows."""
     path = str(tmp_path / "old.db")
-    ledger = Ledger(path, policy=POLICY)
-    pid = _reserved(ledger)
-    ledger.conn.close()
-    con = sqlite3.connect(path)  # simulate a database from before MND-32
-    for col in ("rail", "approval_id", "rail_tx_id"):
-        con.execute(f"ALTER TABLE purchases DROP COLUMN {col}")
+    con = sqlite3.connect(path)
+    con.executescript("""
+        CREATE TABLE mandate (id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, policy_json TEXT NOT NULL,
+          held INTEGER NOT NULL DEFAULT 0, settled INTEGER NOT NULL DEFAULT 0);
+        CREATE TABLE purchases (id TEXT PRIMARY KEY, mandate_id TEXT NOT NULL, request_key TEXT NOT NULL UNIQUE,
+          fingerprint TEXT NOT NULL, seller_domain TEXT NOT NULL, seller_address TEXT NOT NULL, item TEXT NOT NULL,
+          amount INTEGER NOT NULL, attempt INTEGER NOT NULL, tool_call_json TEXT NOT NULL, stage TEXT NOT NULL,
+          decision TEXT, clause TEXT, policy_version INTEGER, policy_hash TEXT, session_key_id TEXT, expires_at REAL,
+          approved_by_human INTEGER NOT NULL DEFAULT 0, rail_order_id TEXT, delivery TEXT NOT NULL DEFAULT 'NONE',
+          created_at REAL NOT NULL, updated_at REAL NOT NULL);
+        INSERT INTO purchases VALUES ('pur_legacy','mnd','k','fp','seller.example','0xa1','item',40,1,'{}',
+          'BLOCKED',NULL,NULL,NULL,NULL,NULL,NULL,0,NULL,'NONE',1,1);
+    """)
     con.commit()
     con.close()
-    reopened = Ledger(path)
-    row = reopened.purchase(pid)
-    assert row["stage"] == Stage.RESERVED.value
+    reopened = Ledger(path, mandate_id="mnd")
+    row = reopened.purchase("pur_legacy")
+    assert row["stage"] == "BLOCKED"
     assert row["rail"] is None and row["approval_id"] is None and row["rail_tx_id"] is None
+    assert row["approval_digest"] is None
+    versions = [r[0] for r in reopened.conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
+    assert versions == [1, 2, 3, 4]

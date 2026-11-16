@@ -14,6 +14,7 @@ concurrency:
   cancel-in-progress: true
 
 env:
+  MANDATE_MODE: sandbox       # CI may only ever run the sandbox rail and seller
   MANDATE_RAIL: mock          # the only rail CI may use
   GOAT_FLOW_API_KEY: ""       # explicitly empty: a live call would fail closed
   GOAT_FLOW_API_SECRET: ""
@@ -42,6 +43,39 @@ jobs:
         run: python scripts/smoke.py   # --scenarios exits 1 by design, so it is covered by pytest instead
       - name: Attack scenarios (mock rail)
         run: if [ -f scripts/attacks.py ]; then python -m scripts.attacks; else echo 'attack scenarios not on this branch yet'; fi
+
+  backend-postgres:
+    # The same suite against a real PostgreSQL, so production storage is tested on every PR.
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: ci-only-password
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres" --health-interval 2s --health-timeout 5s --health-retries 20
+    env:
+      MANDATE_TEST_DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/postgres
+    defaults:
+      run:
+        working-directory: mandate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: mandate/backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: python -m pytest -q
+      - name: Migrations apply cleanly and are idempotent
+        env:
+          DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/postgres
+        run: python -m backend.migrate && python -m backend.migrate
 
   frontend:
     runs-on: ubuntu-latest

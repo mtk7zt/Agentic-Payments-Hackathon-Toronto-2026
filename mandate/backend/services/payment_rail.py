@@ -18,6 +18,7 @@ from typing import Any, Protocol
 
 import httpx
 
+from ..core.ids import ulid
 from ..models.money import milli_to_token_units
 from .signing import sign
 
@@ -160,7 +161,11 @@ def _json(r: httpx.Response) -> dict[str, Any]:
 
 
 class MockRail:
-    """Deterministic fake rail. `behaviour` maps a dapp_order_id substring to an outcome."""
+    """Sandbox rail for development and tests. Never configured in production mode.
+
+    `behaviour` maps a substring of the item name or of the dapp_order_id to a scripted outcome;
+    anything unmatched settles. Order ids are unique, like a real provider's.
+    """
 
     name = "mock"
 
@@ -169,12 +174,13 @@ class MockRail:
         self.orders: dict[str, dict[str, Any]] = {}
         self.create_calls = 0
 
-    def create_order(self, *, dapp_order_id: str, amount_milli: int, **_: Any) -> RailResult:
+    def create_order(self, *, dapp_order_id: str, amount_milli: int, item: str | None = None, **_: Any) -> RailResult:
         self.create_calls += 1
         if dapp_order_id in self.orders:  # mirrors GOAT Flow: duplicates are rejected, never re-opened
             return RailResult(RailOutcome.UNKNOWN, raw={"error": "order already exists"})
-        outcome = next((o for k, o in self.behaviour.items() if k in dapp_order_id), RailOutcome.SETTLED)
-        order_id = f"mock_{len(self.orders) + 1:04d}"
+        outcome = next((o for k, o in self.behaviour.items() if k in dapp_order_id or (item and k in item)),
+                       RailOutcome.SETTLED)
+        order_id = f"mock_{ulid()}"
         self.orders[dapp_order_id] = {"order_id": order_id, "amount_wei": str(milli_to_token_units(amount_milli))}
         if outcome is RailOutcome.UNKNOWN:  # the order may exist on the rail, but we never heard back
             return RailResult(RailOutcome.UNKNOWN, raw={"error": "ReadTimeout"})
@@ -191,12 +197,17 @@ class MockRail:
         return {"order_id": order_id, "signature": "mock-proof", "mock": True}
 
 
-def rail_from_env(store: Any | None = None) -> PaymentRail:
-    """Build the configured rail. `store` (the ledger) lets rails persist state such as pending approvals."""
-    choice = os.environ.get("MANDATE_RAIL", "mock").lower()
+def rail_from_env(choice: str | None = None, store: Any | None = None) -> PaymentRail:
+    """Build the named rail (default: MANDATE_RAIL). `store` (the ledger) lets rails persist pending approvals.
+
+    An unknown name is an error, never a silent fallback to the sandbox rail.
+    """
+    choice = (choice or os.environ.get("MANDATE_RAIL", "")).lower()
     if choice == "goat":
         return GoatFlowRail(GoatFlowConfig.from_env())
     if choice == "qatom":
         from .qatom_rail import QatomConfig, QatomRail
         return QatomRail(QatomConfig.from_env(), store=store)
-    return MockRail()
+    if choice == "mock":
+        return MockRail()
+    raise ValueError(f"unknown payment rail {choice!r}; use goat, qatom or mock (sandbox only)")

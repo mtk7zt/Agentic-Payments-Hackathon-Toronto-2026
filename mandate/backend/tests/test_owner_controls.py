@@ -1,7 +1,6 @@
 """MND-14: stale owner edits and unreconciled resume must fail atomically."""
 
 import secrets
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Barrier, Event
 
@@ -13,6 +12,8 @@ from backend.core.ledger import Ledger, LedgerError
 from backend.core.policy import Intent, Policy
 from backend.services.payment_rail import MockRail
 from backend.services.seller import MockSeller
+
+from .dbtools import inject_failure
 
 POLICY = Policy(whitelisted_sellers={"seller.example": "0xa1"})
 
@@ -55,11 +56,8 @@ def test_policy_version_and_values_roll_back_if_audit_append_fails():
     ledger = Ledger(":memory:", policy=POLICY)
     try:
         before = (ledger.policy(), ledger.events())
-        ledger.conn.execute(
-            "CREATE TRIGGER fail_policy BEFORE INSERT ON events WHEN NEW.type='POLICY_SNAPSHOT' "
-            "BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END",
-        )
-        with pytest.raises(sqlite3.IntegrityError):
+        inject_failure(ledger.conn, "fail_policy", "events", "audit unavailable", event_type="POLICY_SNAPSHOT")
+        with pytest.raises(ledger.conn.IntegrityError):
             ledger.set_policy(expected_version=ledger.policy().version, max_single_spend=80)
         assert (ledger.policy(), ledger.events()) == before
     finally:

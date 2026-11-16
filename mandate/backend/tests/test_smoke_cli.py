@@ -27,7 +27,7 @@ def test_default_mock_prints_stored_purchase_and_balances(monkeypatch, capsys):
 
 def test_unknown_outcome_is_nonzero_and_retains_hold(monkeypatch, capsys):
     monkeypatch.setattr(sys, "argv", ["smoke.py"])
-    monkeypatch.setattr(smoke, "MockRail", lambda *args: MockRail({"pur_0001": RailOutcome.UNKNOWN}))
+    monkeypatch.setattr(smoke, "MockRail", lambda *args: MockRail({"shipping-estimate": RailOutcome.UNKNOWN}))
     assert smoke.main() == 1
     saved = receipt(capsys.readouterr().out)
     assert saved["purchases"][0]["stage"] == "RECOVERY_UNKNOWN"
@@ -37,7 +37,7 @@ def test_unknown_outcome_is_nonzero_and_retains_hold(monkeypatch, capsys):
 @pytest.mark.parametrize("outcome", [RailOutcome.PENDING, RailOutcome.UNPAID])
 def test_pending_or_unpaid_cannot_pass_payment_smoke(monkeypatch, capsys, outcome):
     monkeypatch.setattr(sys, "argv", ["smoke.py"])
-    monkeypatch.setattr(smoke, "MockRail", lambda *args: MockRail({"pur_0001": outcome}))
+    monkeypatch.setattr(smoke, "MockRail", lambda *args: MockRail({"shipping-estimate": outcome}))
     assert smoke.main() == 1
     saved = receipt(capsys.readouterr().out)
     assert saved["balances_milli"]["settled"] == 0

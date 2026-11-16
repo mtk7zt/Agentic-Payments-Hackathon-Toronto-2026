@@ -165,8 +165,8 @@ class HttpSeller:
             self._http.close()
 
 
-def seller_from_env() -> Seller:
-    mode = os.environ.get("MANDATE_SELLER_MODE", "mock").lower()
+def seller_from_env(mode: str | None = None) -> Seller:
+    mode = (mode or os.environ.get("MANDATE_SELLER_MODE", "")).lower()
     if mode == "mock":
         return MockSeller()
     if mode == "http":
