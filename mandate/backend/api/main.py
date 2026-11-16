@@ -84,7 +84,8 @@ def owner(x_owner_token: str | None = Header(default=None)) -> None:
 
 
 def active_agent(x_session_key: str | None = Header(default=None)) -> str:
-    resolved = ledger.sessions.resolve(x_session_key) if x_session_key else None
+    with ledger.snapshot():
+        resolved = ledger.sessions.resolve(x_session_key) if x_session_key else None
     if not resolved or resolved[1] is not SessionState.ACTIVE:
         raise HTTPException(401, "session key missing, frozen or revoked")
     return resolved[0]
@@ -112,13 +113,15 @@ def health() -> dict[str, str]:
 
 @app.get("/api/v1/state", dependencies=[Depends(owner)])
 def state() -> dict[str, Any]:
-    pol = ledger.policy()
-    return {
-        "mandate_id": ledger.mandate_id, "rail": rail.name, "unit": "USD-TDN thousandths",
-        "balances": ledger.balances(), "policy": {**json.loads(pol.canonical()), "hash": pol.hash()},
-        "purchases": [view(p) for p in ledger.purchases()], "chain": ledger.verify_chain(),
-        "session_keys": ledger.session_status(),
-    }
+    # One lock for the whole read, so balances, purchases and the chain describe the same moment.
+    with ledger.snapshot():
+        pol = ledger.policy()
+        return {
+            "mandate_id": ledger.mandate_id, "rail": rail.name, "unit": "USD-TDN thousandths",
+            "balances": ledger.balances(), "policy": {**json.loads(pol.canonical()), "hash": pol.hash()},
+            "purchases": [view(p) for p in ledger.purchases()], "chain": ledger.verify_chain(),
+            "session_keys": ledger.session_status(),
+        }
 
 
 @app.post("/api/v1/purchases", status_code=201)

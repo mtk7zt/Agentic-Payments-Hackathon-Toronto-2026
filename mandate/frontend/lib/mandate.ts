@@ -173,7 +173,7 @@ function apply(st: StateDTO, wallet: WalletDTO | null) {
   if (Object.keys(pendingPolicy).length) live = { ...live, policy: { ...live.policy, ...pendingPolicy } };
 }
 
-// Sequential on purpose: the gateway's ledger can fail two overlapping reads (see the PR notes).
+// One read after the other keeps gateway load low. Overlapping reads are safe since MND-30.
 async function fetchAll(timeoutMs?: number) {
   const st = await api.state(timeoutMs);
   const wallet = await api.wallet().catch(() => extras?.wallet ?? null);
