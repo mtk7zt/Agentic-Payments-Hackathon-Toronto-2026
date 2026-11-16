@@ -3,7 +3,8 @@
 
     python scripts/smoke.py            # mock rail, no network, no money
     python scripts/smoke.py --scenarios # five mock scenarios; UNKNOWN exits 1
-    python scripts/smoke.py --live     # ONE real GOAT Flow Testnet3 order (needs GOAT_FLOW_* env)
+    python scripts/smoke.py --live     # ONE GOAT Flow Testnet3 order, 0.040 test USDC (needs GOAT_FLOW_* env).
+                                       # Testnet tokens only; the script refuses any other origin or chain.
 
 Exits non-zero if any purchase ends in an unexpected state or the evidence chain is broken.
 """
@@ -99,6 +100,21 @@ def main() -> int:
         except LedgerError as exc:
             print(f"PASS  retry after timeout refused       ({exc}); rail calls unchanged: {rail.create_calls == calls_before}")
             ok &= rail.create_calls == calls_before
+
+    if args.live:  # MND-01 evidence: the real Testnet3 field names and statuses, values redacted
+        def shape(body):
+            if isinstance(body, dict):
+                return {k: shape(v) for k, v in body.items()}
+            if isinstance(body, list):
+                return [shape(body[0])] if body else []
+            return type(body).__name__
+        order_id = cases[0][1]["rail_order_id"]
+        status = rail.get_order(order_id) if order_id else None
+        print("\nMND-01 Testnet3 contract (values redacted):", json.dumps({
+            "create_order_status": cases[0][1]["stage"],
+            "order_status": status.status if status else None,
+            "order_outcome": status.outcome.value if status else None,
+            "order_fields": shape(status.raw) if status else None}, indent=2))
 
     bal, chain = ledger.balances(), ledger.verify_chain()
     ok &= chain["intact"] and bal["available"] + bal["held"] + bal["settled"] == bal["budget"]
