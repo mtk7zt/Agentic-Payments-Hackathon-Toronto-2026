@@ -2,7 +2,6 @@
 import hashlib
 import json
 import secrets
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 from threading import Event
 
@@ -17,6 +16,8 @@ from backend.services import orchestrator
 from backend.services.payment_rail import MockRail
 from backend.services.seller import MockSeller
 from scripts import smoke
+
+from .dbtools import inject_failure
 
 
 @pytest.fixture
@@ -101,9 +102,8 @@ def test_pause_revokes_frozen_keys_and_does_not_allow_new_or_thawed_keys(ledger)
 def test_lifecycle_and_audit_roll_back_together(ledger):
     key, token = ledger.issue_session_key()
     before = ledger.events()
-    ledger.conn.execute("CREATE TRIGGER fail_session BEFORE INSERT ON events "
-                        "WHEN NEW.type='SESSION_KEY_FROZEN' BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
-    with pytest.raises(sqlite3.IntegrityError):
+    inject_failure(ledger.conn, "fail_session", "events", "audit unavailable", event_type="SESSION_KEY_FROZEN")
+    with pytest.raises(ledger.conn.IntegrityError):
         ledger.change_session_state(key, SessionState.FROZEN)
     assert ledger.sessions.resolve(token)[1] is SessionState.ACTIVE
     assert ledger.events() == before

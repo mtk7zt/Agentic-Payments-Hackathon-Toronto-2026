@@ -163,7 +163,7 @@ def test_unsettled_purchase_never_fetches_seller(seller_api, token, outcome):
     with httpx.Client(base_url="http://seller.test", transport=httpx.MockTransport(bridge(seller_api, seen))) as client:
         try:
             orchestrator.submit(
-                ledger, MockRail({"pur_0001": outcome}), HttpSeller("http://seller.test", token, client),
+                ledger, MockRail({"shipping-estimate": outcome}), HttpSeller("http://seller.test", token, client),
                 request_key="unsettled-checkout", intent=Intent(*SELLER, "shipping-estimate", 40), tool_call={},
             )
             assert seen == [] and ledger.balances()["settled"] == 0
@@ -191,7 +191,9 @@ def test_seller_auth_failure_keeps_payment_settled_and_recovery_never_recharges(
 
 def test_http_seller_configuration_is_explicit_and_secret_free(monkeypatch):
     monkeypatch.delenv("MANDATE_SELLER_MODE", raising=False)
-    assert isinstance(seller_from_env(), MockSeller)
+    with pytest.raises(ValueError, match="mock or http"):
+        seller_from_env()  # no silent fallback to the sandbox seller
+    assert isinstance(seller_from_env("mock"), MockSeller)
     monkeypatch.setenv("MANDATE_SELLER_MODE", "http")
     monkeypatch.delenv("MANDATE_SELLER_TOKEN", raising=False)
     with pytest.raises(RuntimeError, match="MANDATE_SELLER_TOKEN"):

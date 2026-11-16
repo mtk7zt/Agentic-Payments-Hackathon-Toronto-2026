@@ -1,4 +1,3 @@
-import sqlite3
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
@@ -8,6 +7,8 @@ from backend.core.policy import Intent, Policy
 from backend.services import orchestrator
 from backend.services.payment_rail import MockRail
 from backend.services.seller import MockSeller
+
+from .dbtools import inject_failure
 
 POLICY = Policy(task_budget_cap=100, max_single_spend=100, whitelisted_sellers={'seller.example': '0xa1'})
 
@@ -122,10 +123,9 @@ def test_reservation_and_event_roll_back_together():
     ledger = Ledger(policy=POLICY)
     purchase, _ = ledger.propose(request_key='rollback-reserve', intent=Intent('seller.example', '0xa1', 'item', 80),
                                  tool_call={})
-    ledger.conn.execute("CREATE TRIGGER fail_reserve BEFORE INSERT ON events WHEN NEW.type='BUDGET_RESERVED' "
-                        "BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
+    inject_failure(ledger.conn, "fail_reserve", "events", "audit unavailable", event_type="BUDGET_RESERVED")
     before = ledger.events()
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(ledger.conn.IntegrityError):
         ledger.evaluate_and_reserve(purchase['id'])
     assert ledger.balances() == {'budget': 100, 'held': 0, 'settled': 0, 'available': 100}
     assert ledger.purchase(purchase['id'])['stage'] == 'PROPOSED'
@@ -156,9 +156,8 @@ def test_settled_and_held_budget_floor_and_wallet_audit_rollback():
     with pytest.raises(LedgerError):
         ledger.set_policy(task_budget_cap=79)
     assert ledger.balances() == before == {'budget': 100, 'held': 40, 'settled': 40, 'available': 20}
-    ledger.conn.execute("CREATE TRIGGER fail_wallet BEFORE INSERT ON events WHEN NEW.type='WALLET_OBSERVED' "
-                        "BEGIN SELECT RAISE(ABORT, 'audit unavailable'); END")
-    with pytest.raises(sqlite3.IntegrityError):
+    inject_failure(ledger.conn, "fail_wallet", "events", "audit unavailable", event_type="WALLET_OBSERVED")
+    with pytest.raises(ledger.conn.IntegrityError):
         ledger.record_wallet_observation(1, 'owner: uncommitted mismatch')
     assert ledger.wallet_status()['mismatch'] is False
     assert ledger.wallet_status()['observed_milli'] == 100

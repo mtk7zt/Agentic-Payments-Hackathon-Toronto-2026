@@ -19,6 +19,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from ..config import load_settings
 from ..core.ledger import Ledger, LedgerError
 from ..core.policy import Intent
 from ..core.sessions import SessionState
@@ -29,12 +30,14 @@ from ..services.payment_rail import rail_from_env
 from ..services.seller import seller_from_env
 from .streams import GRANT_SECONDS, mint_grant, read_grant, stream_frames
 
-DEMO_SELLERS = {
+# Seeded into an empty whitelist in sandbox mode only.
+SANDBOX_SELLERS = {
     "seller-a.example": "0x00000000000000000000000000000000000000a1",
     "seller-b.example": "0x00000000000000000000000000000000000000b2",
 }
 
 log = logging.getLogger("mandate.api")
+settings = load_settings()  # raises ConfigError, listing every problem, before anything else starts
 app = FastAPI(title="Mandate gateway", version="0.1.0")
 class CatchUnexpected:
     """Turns an unhandled error into a JSON 500 *inside* the CORS layer, so the browser still sees CORS
@@ -64,16 +67,16 @@ class CatchUnexpected:
 app.add_middleware(CatchUnexpected)  # added first, so CORS (added next) wraps it
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=os.environ.get("MANDATE_CORS_ORIGINS", "http://localhost:3000").split(","),
+    allow_origins=list(settings.cors_origins),
     allow_methods=["*"], allow_headers=["*"],
     allow_credentials=True,
 )
 
-ledger = Ledger(os.environ.get("MANDATE_DB", ":memory:"))
-if not ledger.policy().whitelisted_sellers:
-    ledger.set_policy(whitelisted_sellers=DEMO_SELLERS)
-rail = rail_from_env(store=ledger)
-seller = seller_from_env()
+ledger = Ledger(settings.database_url)
+if settings.sandbox and not ledger.policy().whitelisted_sellers:
+    ledger.set_policy(whitelisted_sellers=SANDBOX_SELLERS)
+rail = rail_from_env(settings.rail, store=ledger)
+seller = seller_from_env(settings.seller_mode)
 
 
 class Strict(BaseModel):
@@ -141,7 +144,7 @@ def guard(fn, *args, **kwargs):
 
 @app.get("/health")
 def health() -> dict[str, str]:
-    return {"status": "ok", "rail": rail.name}
+    return {"status": "ok", "rail": rail.name, "mode": settings.mode}
 
 
 @app.get("/api/v1/state", dependencies=[Depends(owner)])

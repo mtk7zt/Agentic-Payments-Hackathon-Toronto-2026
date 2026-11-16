@@ -35,7 +35,7 @@ Mandate is pre-release. The payment core above is complete and covered by more t
 
 | Area | Today | Before GA |
 | --- | --- | --- |
-| Storage | SQLite, one mandate per process | PostgreSQL behind a storage interface, Alembic migrations, tenants with row-level security |
+| Storage | SQLite or PostgreSQL behind one interface, versioned migrations, both tested in CI; one mandate per database | Tenants (organisation and workspace) with row-level security |
 | Identity | One owner token; hashed, revocable agent keys | OIDC/SSO for people, roles, per-organisation API keys, rotating agent keys |
 | Agent access | REST API | MCP server, OpenAPI, Python and TypeScript SDKs, signed webhooks |
 | Rails | Adapters for GOAT Flow, Qatom and a sandbox rail | Live-verified against each provider's sandbox through one shared contract suite; x402 facilitator adapter |
@@ -63,6 +63,9 @@ Details: [architecture and state machine](docs/ARCHITECTURE.md) · [security mod
 backend/
   core/policy.py            pure evaluate(intent, policy, available) -> decision + clause
   core/ledger.py            reservations, dispatch claims, approvals, hash-linked evidence
+  core/db.py                database interface: SQLite and PostgreSQL drivers
+  core/migrations.py        versioned schema for both engines
+  config.py                 settings; production refuses every sandbox shortcut
   core/sessions.py          agent session keys: issue, freeze, revoke
   services/payment_rail.py  PaymentRail contract and adapters
   services/qatom_rail.py    Qatom adapter (MCP agent checkout with owner approval)
@@ -77,25 +80,37 @@ scripts/                    smoke test, attack scenarios, Qatom sign-in
 ## Run it locally
 
 ```bash
-python -m venv .venv && source .venv/bin/activate
+python -m venv .venv && source .venv/bin/activate      # Windows: py -m venv .venv && .venv\Scripts\activate
 pip install -r backend/requirements.txt
-python -m pytest                       # full backend suite
-python scripts/smoke.py                # one end-to-end purchase on the sandbox rail
-python -m scripts.attacks              # injection, address swap, over-limit, loops
-MANDATE_OWNER_TOKEN=change-me MANDATE_DB=./mandate.db \
-  uvicorn backend.api.main:app --reload   # http://localhost:8000/docs
+python -m pytest                                       # full suite on SQLite
+python scripts/smoke.py                                # one end-to-end purchase on the sandbox rail
+python -m scripts.attacks                              # injection, address swap, over-limit, loops
+
+export MANDATE_MODE=sandbox MANDATE_OWNER_TOKEN=$(python -c "import secrets;print(secrets.token_urlsafe(32))")
+uvicorn backend.api.main:app --reload                  # http://localhost:8000/docs
 
 cd frontend && npm install
 NEXT_PUBLIC_MANDATE_API_URL=http://localhost:8000 npm run dev   # http://localhost:3000/console
 ```
 
-Always set `MANDATE_DB` to a file path. Without it the gateway uses an in-memory database that is lost on restart. Owner routes stay closed until `MANDATE_OWNER_TOKEN` is set. The cockpit asks for the owner credential and keeps it in memory only.
+Production is the default mode. It refuses to start until every adapter is real: a persistent `DATABASE_URL`, a real rail (`goat` or `qatom`), a real seller service (`http`) and an owner token of at least 32 characters. Sandbox mode must be chosen explicitly and keeps its data in `mandate-sandbox.db`.
+
+## Database
+
+SQLite for local development and single-node installs; PostgreSQL for production (Supabase, RDS, Cloud SQL or self-hosted). Moving between them changes `DATABASE_URL`, not code. The schema is versioned in `backend/core/migrations.py`, and evidence tables are append-only by database trigger on both engines.
+
+```bash
+DATABASE_URL=postgresql://… python -m backend.migrate             # create or upgrade the schema
+MANDATE_TEST_DATABASE_URL=postgresql://… python -m pytest          # run every test on PostgreSQL
+```
+
+CI runs the full suite on both SQLite and PostgreSQL for every pull request.
 
 ## Connecting a payment rail
 
 | Rail | Set | Sign-in |
 | --- | --- | --- |
-| Sandbox (development and CI) | `MANDATE_RAIL=mock` | none |
+| Sandbox (development and CI) | `MANDATE_MODE=sandbox`, `MANDATE_RAIL=mock` | none |
 | GOAT Flow x402 (Testnet3) | `MANDATE_RAIL=goat` and the `GOAT_FLOW_*` values in `.env` | API key and secret from GOAT Flow; verify with `python scripts/smoke.py --live` |
 | Qatom | `MANDATE_RAIL=qatom`, `QATOM_ITEM_MAP` | `python -m scripts.qatom_login` once, which saves `QATOM_TOKEN_FILE` |
 

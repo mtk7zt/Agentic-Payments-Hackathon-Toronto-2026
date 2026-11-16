@@ -50,7 +50,7 @@ def main() -> int:
                 raise ValueError("Testnet3 origin and chain required")
             rail = GoatFlowRail(config)
         else:
-            rail = MockRail({"0005": RailOutcome.UNKNOWN} if args.scenarios else {})
+            rail = MockRail({"customs-codes": RailOutcome.UNKNOWN} if args.scenarios else {})  # scripted timeout
     except (RuntimeError, ValueError):
         print("FAIL live configuration: supply Testnet3 credentials, origin and chain 48816", file=sys.stderr)
         return 2

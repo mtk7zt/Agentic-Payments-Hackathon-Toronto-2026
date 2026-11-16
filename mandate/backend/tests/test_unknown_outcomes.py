@@ -47,7 +47,8 @@ def test_lookup_by_original_dapp_order_id_settles_once():
     ledger, rail = Ledger(policy=POLICY), MockRail({"mnd-": RailOutcome.UNKNOWN})
     pid = unknown_purchase(ledger, rail)
     out = orchestrator.reconcile(ledger, rail, MockSeller(), pid)
-    assert out["stage"] == Stage.VERIFIED.value and out["rail_order_id"] == "mock_0001"
+    (order,) = [o["order_id"] for o in rail.orders.values()]
+    assert out["stage"] == Stage.VERIFIED.value and out["rail_order_id"] == order
     assert ledger.balances()["held"] == 0 and ledger.balances()["settled"] == 40
 
 
@@ -119,5 +120,6 @@ def test_resolve_route_paid_then_delivery_is_verified(monkeypatch):
     pid = unknown_purchase(ledger, rail)
     c, h = TestClient(main.app), {"X-Owner-Token": "owner-secret"}
     assert c.post(f"/api/v1/purchases/{pid}/resolve", headers=h, json={"outcome": "MAYBE", "reference": "x"}).status_code == 422
-    out = c.post(f"/api/v1/purchases/{pid}/resolve", headers=h, json={"outcome": "PAID", "reference": "mock_0001"}).json()
-    assert out["stage"] in ("VERIFIED", "RECOVERY_UNDELIVERED") and out["rail_tx_id"] == "mock_0001"
+    (order,) = [o["order_id"] for o in rail.orders.values()]
+    out = c.post(f"/api/v1/purchases/{pid}/resolve", headers=h, json={"outcome": "PAID", "reference": order}).json()
+    assert out["stage"] in ("VERIFIED", "RECOVERY_UNDELIVERED") and out["rail_tx_id"] == order

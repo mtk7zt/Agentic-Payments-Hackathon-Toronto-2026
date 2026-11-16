@@ -1,6 +1,5 @@
 import json
 import secrets
-import sqlite3
 
 import pytest
 from fastapi.testclient import TestClient
@@ -8,6 +7,8 @@ from fastapi.testclient import TestClient
 from backend.api import main as gateway
 from backend.core.ledger import Ledger, LedgerError, event_hash
 from backend.core.policy import Intent
+
+from .dbtools import drop_append_only, inject_failure
 
 
 @pytest.fixture
@@ -42,7 +43,7 @@ def test_unconfigured_signing_is_explicit_and_fails_closed():
 
 def test_row_edit_reports_first_bad_link(ledger):
     ledger.issue_session_key()
-    ledger.conn.execute("DROP TRIGGER events_no_update")
+    drop_append_only(ledger.conn)
     ledger.conn.execute("UPDATE events SET detail='tampered' WHERE seq=2")
     result = ledger.verify_chain()
     assert not result["intact"] and result["first_bad_seq"] == 2
@@ -53,7 +54,7 @@ def test_row_edit_reports_first_bad_link(ledger):
 def test_reordering_reports_first_broken_sequence(ledger):
     ledger.issue_session_key()
     ledger.issue_session_key()
-    ledger.conn.execute("DROP TRIGGER events_no_update")
+    drop_append_only(ledger.conn)
     ledger.conn.execute("UPDATE events SET seq=99 WHERE seq=2")
     ledger.conn.execute("UPDATE events SET seq=2 WHERE seq=3")
     ledger.conn.execute("UPDATE events SET seq=3 WHERE seq=99")
@@ -64,7 +65,7 @@ def test_reordering_reports_first_broken_sequence(ledger):
 def test_truncation_against_retained_checkpoint(ledger):
     ledger.issue_session_key()
     checkpoint = ledger.create_checkpoint()
-    ledger.conn.execute("DROP TRIGGER events_no_delete")
+    drop_append_only(ledger.conn)
     ledger.conn.execute("DELETE FROM events WHERE seq=2")
     result = ledger.verify_chain(checkpoint=checkpoint)
     assert not result["intact"] and result["first_bad_seq"] == 2
@@ -74,7 +75,7 @@ def test_truncation_against_retained_checkpoint(ledger):
 def test_full_rehash_cannot_forge_retained_checkpoint(ledger):
     ledger.issue_session_key()
     retained = ledger.create_checkpoint()
-    ledger.conn.execute("DROP TRIGGER events_no_update")
+    drop_append_only(ledger.conn)
     previous = "0" * 64
     for event in ledger.events():
         body = {key: value for key, value in event.items() if key not in ("hash", "prev")}
@@ -96,17 +97,16 @@ def test_forged_or_cross_scope_checkpoint_is_rejected(ledger, field, value):
 
 
 def test_checkpoint_and_event_rollback_together(ledger):
-    ledger.conn.execute("CREATE TRIGGER fail_checkpoint BEFORE INSERT ON evidence_checkpoints "
-                        "BEGIN SELECT RAISE(ABORT, 'checkpoint unavailable'); END")
+    inject_failure(ledger.conn, "fail_checkpoint", "evidence_checkpoints", "checkpoint unavailable")
     before = ledger.events()
-    with pytest.raises(sqlite3.IntegrityError):
+    with pytest.raises(ledger.conn.IntegrityError):
         ledger.issue_session_key()
     assert ledger.events() == before and ledger.session_status() == []
 
 
 def test_periodic_signing_refuses_rewritten_history_instead_of_blessing_it(ledger):
     ledger.issue_session_key()
-    ledger.conn.execute("DROP TRIGGER events_no_update")
+    drop_append_only(ledger.conn)
     ledger.conn.execute("UPDATE events SET detail='tampered' WHERE seq=1")
     before = ledger.events()
     with pytest.raises(LedgerError, match="broken"):
@@ -122,7 +122,7 @@ def test_checkpoint_append_guards_and_retained_trust_after_reopen(tmp_path):
     ledger = Ledger(path, checkpoint_key=key)
     checkpoint = ledger.create_checkpoint()
     for statement in ("DELETE FROM evidence_checkpoints", "UPDATE evidence_checkpoints SET seq=0"):
-        with pytest.raises(sqlite3.IntegrityError):
+        with pytest.raises(ledger.conn.IntegrityError):
             ledger.conn.execute(statement)
     ledger.conn.close()
     reopened = Ledger(path, checkpoint_key=key)

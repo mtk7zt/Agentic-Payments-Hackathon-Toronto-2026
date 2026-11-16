@@ -38,7 +38,7 @@ class AgentAction(BaseModel):
 class StatusIn(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    purchase_id: str = Field(pattern=r"^pur_[0-9]+$")
+    purchase_id: str = Field(pattern=r"^pur_(?:[0-9]{1,12}|[0-9A-HJKMNP-TV-Z]{26})$")  # legacy numeric or ULID
 
 
 def _proposal(arguments: dict[str, Any]) -> dict[str, Any]:
