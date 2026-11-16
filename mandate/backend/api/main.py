@@ -157,9 +157,22 @@ def purchase_status(purchase_id: str) -> dict[str, Any]:
     return view(purchase)
 
 
+class ApproveBody(Strict):
+    digest: str = Field(min_length=64, max_length=64, pattern="^[0-9a-f]{64}$")
+
+
+@app.get("/api/v1/purchases/{purchase_id}/approval", dependencies=[Depends(owner)])
+def approval_summary(purchase_id: str) -> dict[str, Any]:
+    """Exact terms the owner is approving, and the digest to send back with the approval."""
+    out = guard(ledger.approval_summary, purchase_id)
+    out["amount"] = format_milli(out["amount_milli"])
+    return out
+
+
 @app.post("/api/v1/purchases/{purchase_id}/approve", dependencies=[Depends(owner)])
-def approve(purchase_id: str) -> dict[str, Any]:
-    guard(ledger.approve, purchase_id)
+def approve(purchase_id: str, body: ApproveBody) -> dict[str, Any]:
+    # The digest binds this approval to the seller, item, arguments, amount and policy version the owner saw.
+    guard(ledger.approve, purchase_id, body.digest)
     return view(guard(orchestrator.execute, ledger, rail, seller, purchase_id))
 
 

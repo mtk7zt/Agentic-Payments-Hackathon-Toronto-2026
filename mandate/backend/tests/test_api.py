@@ -32,7 +32,11 @@ def test_flow_through_the_api():
     assert c.post("/api/v1/purchases", json=body(2), headers=k).json()["stage"] == "VERIFIED"
     held = c.post("/api/v1/purchases", json=body(3, "seller-b.example", "0x00000000000000000000000000000000000000b2", "2.500"), headers=k).json()
     assert held["stage"] == "PENDING_APPROVAL"
-    assert c.post(f"/api/v1/purchases/{held['id']}/approve").json()["stage"] == "VERIFIED"
+    summary = c.get(f"/api/v1/purchases/{held['id']}/approval").json()
+    assert summary["seller_domain"] == "seller-b.example" and summary["amount"] == "2.500"
+    assert c.post(f"/api/v1/purchases/{held['id']}/approve").status_code == 422  # digest required
+    assert c.post(f"/api/v1/purchases/{held['id']}/approve", json={"digest": "0" * 64}).status_code == 409
+    assert c.post(f"/api/v1/purchases/{held['id']}/approve", json={"digest": summary["digest"]}).json()["stage"] == "VERIFIED"
     assert c.post("/api/v1/purchases", json={**body(4), "amount": 0.04}, headers=k).status_code == 422
     assert c.post("/api/v1/purchases", json={**body(5), "extra": 1}, headers=k).status_code == 422
     blocked = c.post("/api/v1/purchases", json=body(6, "attacker.eth", "0xdead", "2.500"), headers=k).json()

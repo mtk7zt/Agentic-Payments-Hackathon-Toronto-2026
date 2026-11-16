@@ -382,7 +382,7 @@ export function run(k: ScenarioKey): Promise<TxResult> {
 }
 
 export function approveAndRun(id: string): Promise<TxResult> {
-  return isLive() ? guard(() => api.approve(id), "Purchase approved and sent to the rail.") : Promise.resolve(sim.approveAndRun(id));
+  return isLive() ? guard(async () => api.approve(id, (await api.approval(id)).digest), "Purchase approved and sent to the rail.") : Promise.resolve(sim.approveAndRun(id));
 }
 
 export function release(id: string, why: "REJECTED" | "EXPIRED"): Promise<TxResult> {
