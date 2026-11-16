@@ -10,7 +10,9 @@ Invariant, checked before every commit:  available + held + settled = budget.
 from __future__ import annotations
 
 import hashlib
+import hmac
 import json
+import os
 import sqlite3
 import threading
 import time
@@ -82,6 +84,13 @@ CREATE TABLE IF NOT EXISTS events (
 CREATE TABLE IF NOT EXISTS session_keys (
   key_id TEXT PRIMARY KEY, agent_id TEXT NOT NULL, token_sha256 TEXT NOT NULL UNIQUE, state TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS evidence_checkpoints (
+  id TEXT PRIMARY KEY, mandate_id TEXT NOT NULL, seq INTEGER NOT NULL, checkpoint_json TEXT NOT NULL
+);
+CREATE TRIGGER IF NOT EXISTS checkpoints_no_update BEFORE UPDATE ON evidence_checkpoints
+BEGIN SELECT RAISE(ABORT, 'checkpoints are append-only'); END;
+CREATE TRIGGER IF NOT EXISTS checkpoints_no_delete BEFORE DELETE ON evidence_checkpoints
+BEGIN SELECT RAISE(ABORT, 'checkpoints are append-only'); END;
 -- The application role may append evidence but never rewrite it.
 CREATE TRIGGER IF NOT EXISTS events_no_update BEFORE UPDATE ON events
 BEGIN SELECT RAISE(ABORT, 'events are append-only'); END;
@@ -100,7 +109,11 @@ def event_hash(prev: str, body: dict[str, Any]) -> str:
 
 class Ledger:
     def __init__(self, path: str = ":memory:", mandate_id: str = "mnd_acme_04", agent_id: str = "agent04",
-                 policy: Policy | None = None):
+                 policy: Policy | None = None, *, checkpoint_key: str | None = None, checkpoint_interval: int = 10):
+        if type(checkpoint_interval) is not int or checkpoint_interval < 1:
+            raise ValueError("checkpoint interval must be a positive integer")
+        self._checkpoint_key = os.environ.get("MANDATE_CHECKPOINT_KEY", "") if checkpoint_key is None else checkpoint_key
+        self._checkpoint_interval = checkpoint_interval
         self.mandate_id = mandate_id
         self.agent_id = agent_id
         self._lock = threading.RLock()
@@ -160,6 +173,8 @@ class Ledger:
             "INSERT INTO events(seq,ts,type,actor,purchase_id,amount,clause,ref,detail,policy_hash,prev,hash) "
             "VALUES (:seq,:ts,:type,:actor,:purchase_id,:amount,:clause,:ref,:detail,:policy_hash,:prev,:hash)",
             {**body, "prev": prev, "hash": event_hash(prev, body)})
+        if self._checkpoint_key and body["seq"] % self._checkpoint_interval == 0:
+            self._store_checkpoint()
 
     def _purchase(self, purchase_id: str) -> sqlite3.Row:
         row = self.conn.execute("SELECT * FROM purchases WHERE id=?", (purchase_id,)).fetchone()
@@ -194,17 +209,70 @@ class Ledger:
         with self._lock:
             return [dict(r) for r in self.conn.execute("SELECT * FROM events WHERE seq>? ORDER BY seq", (after_seq,))]
 
-    def verify_chain(self) -> dict[str, Any]:
+    def latest_checkpoint(self) -> dict[str, Any] | None:
+        with self._lock:
+            row = self.conn.execute(
+                "SELECT checkpoint_json FROM evidence_checkpoints WHERE mandate_id=? ORDER BY seq DESC, rowid DESC LIMIT 1",
+                (self.mandate_id,)).fetchone()
+            return json.loads(row[0]) if row else None
+
+    def _store_checkpoint(self) -> dict[str, Any]:
+        if not self._checkpoint_key:
+            raise LedgerError("checkpoint key is not configured")
+        if not self.verify_chain()["intact"]:
+            raise LedgerError("cannot checkpoint a broken or untrusted chain")
+        head = self.conn.execute("SELECT seq, hash FROM events ORDER BY seq DESC LIMIT 1").fetchone()
+        body = {"schema": "mandate.checkpoint.v1", "mandate_id": self.mandate_id, "agent_id": self.agent_id,
+                "seq": head["seq"] if head else 0, "head": head["hash"] if head else GENESIS,
+                "issued_at_ms": time.time_ns() // 1_000_000,
+                "key_id": hashlib.sha256(self._checkpoint_key.encode()).hexdigest()[:16]}
+        body["ref"] = "sha256:" + hashlib.sha256(canonical(body).encode()).hexdigest()
+        signature = hmac.new(self._checkpoint_key.encode(), canonical(body).encode(), hashlib.sha256).hexdigest()
+        checkpoint = {**body, "signature": signature}
+        self.conn.execute("INSERT OR IGNORE INTO evidence_checkpoints VALUES (?,?,?,?)",
+                          (body["ref"], self.mandate_id, body["seq"], canonical(checkpoint)))
+        return checkpoint
+
+    def create_checkpoint(self) -> dict[str, Any]:
+        with self._tx():
+            return self._store_checkpoint()
+
+    def verify_chain(self, checkpoint: dict[str, Any] | None = None) -> dict[str, Any]:
         """Re-hash every event. Detects edits, reordering and gaps."""
+        checkpoint = self.latest_checkpoint() if checkpoint is None else checkpoint
         prev, n = GENESIS, 0
-        for e in self.events():
+        events = self.events()
+        for e in events:
             n += 1
             body = {k: e[k] for k in ("seq", "ts", "type", "actor", "purchase_id", "amount", "clause", "ref",
                                       "detail", "policy_hash")}
             if e["seq"] != n or e["prev"] != prev or event_hash(prev, body) != e["hash"]:
                 return {"intact": False, "first_bad_seq": e["seq"], "events": n}
             prev = e["hash"]
-        return {"intact": True, "head": prev, "events": n}
+        result = {"intact": True, "head": prev, "events": n, "checkpoint_verified": False,
+                  "checkpoint_ref": checkpoint.get("ref") if isinstance(checkpoint, dict) else None}
+        if checkpoint is None:
+            return result
+        if not isinstance(checkpoint, dict):
+            return {**result, "intact": False, "reason": "checkpoint_invalid"}
+        body = {k: v for k, v in checkpoint.items() if k != "signature"}
+        expected_fields = {"schema", "mandate_id", "agent_id", "seq", "head", "issued_at_ms", "key_id", "ref"}
+        signature = checkpoint.get("signature")
+        valid = (self._checkpoint_key and set(body) == expected_fields and isinstance(signature, str)
+                 and len(signature) == 64 and all(c in "0123456789abcdef" for c in signature)
+                 and hmac.compare_digest(hmac.new(self._checkpoint_key.encode(), canonical(body).encode(),
+                                                 hashlib.sha256).hexdigest(), signature)
+                 and body["schema"] == "mandate.checkpoint.v1" and body["mandate_id"] == self.mandate_id
+                 and body["agent_id"] == self.agent_id and type(body["seq"]) is int and body["seq"] >= 0)
+        if not valid:
+            return {**result, "intact": False, "reason": "checkpoint_invalid"}
+        seq = body["seq"]
+        if seq > n:
+            return {**result, "intact": False, "reason": "checkpoint_truncated", "first_bad_seq": n + 1}
+        observed = events[seq - 1]["hash"] if seq else GENESIS
+        if observed != body["head"]:
+            return {**result, "intact": False, "reason": "checkpoint_head_mismatch", "first_bad_seq": seq}
+        return {**result, "checkpoint_verified": True, "checkpoint_seq": seq}
 
     # ───────── owner ─────────
 
