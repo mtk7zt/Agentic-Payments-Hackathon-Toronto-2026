@@ -13,6 +13,7 @@ def pytest_configure(config):
     patch.delenv("DATABASE_URL", raising=False)
     patch.setenv("MANDATE_RAIL", "mock")
     patch.setenv("MANDATE_SELLER_MODE", "mock")
+    patch.setenv("MANDATE_RATE_LIMIT_ENABLED", "0")  # suite-wide: tests that hammer the API are not about rate limits
     config.stash[_ENV] = patch
 
 
