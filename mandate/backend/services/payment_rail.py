@@ -191,11 +191,12 @@ class MockRail:
         return {"order_id": order_id, "signature": "mock-proof", "mock": True}
 
 
-def rail_from_env() -> PaymentRail:
+def rail_from_env(store: Any | None = None) -> PaymentRail:
+    """Build the configured rail. `store` (the ledger) lets rails persist state such as pending approvals."""
     choice = os.environ.get("MANDATE_RAIL", "mock").lower()
     if choice == "goat":
         return GoatFlowRail(GoatFlowConfig.from_env())
     if choice == "qatom":
         from .qatom_rail import QatomConfig, QatomRail
-        return QatomRail(QatomConfig.from_env())
+        return QatomRail(QatomConfig.from_env(), store=store)
     return MockRail()

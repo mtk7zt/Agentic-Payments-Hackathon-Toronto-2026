@@ -104,14 +104,33 @@ def _parse_rpc(r: httpx.Response) -> dict[str, Any]:
 class QatomRail:
     name = "qatom"
 
-    def __init__(self, config: QatomConfig, mcp: McpClient | None = None):
+    def __init__(self, config: QatomConfig, mcp: McpClient | None = None, store: Any | None = None):
         self.cfg = config
         self.mcp = mcp or McpClient(config.mcp_url, config.token(), timeout_s=config.timeout_s)
-        # approval id -> the exact purchase it approves (same item, same arguments, same cap)
+        # approval id -> the exact purchase it approves (same item, same arguments, same cap).
+        # With a store (the ledger) this survives a restart; without one it lives in memory.
+        self.store = store
         self.pending: dict[str, dict[str, Any]] = {}
 
+    def _remember(self, approval_id: str, dispatch_key: str, ctx: dict[str, Any]) -> None:
+        if self.store is not None:
+            self.store.save_rail_approval(approval_id, rail=self.name, dispatch_key=dispatch_key, context=ctx)
+        else:
+            self.pending[approval_id] = ctx
+
+    def _recall(self, approval_id: str) -> dict[str, Any] | None:
+        if self.store is not None:
+            row = self.store.rail_approval(approval_id)
+            return None if row is None else row["context"]
+        return self.pending.get(approval_id)
+
+    def _forget(self, approval_id: str) -> None:
+        if self.store is not None:
+            self.store.resolve_rail_approval(approval_id)
+        self.pending.pop(approval_id, None)
+
     def _checkout(self, item_id: int, arguments: dict[str, Any], amount_milli: int,
-                  approval_id: str | None = None) -> RailResult:
+                  approval_id: str | None = None, dispatch_key: str = "") -> RailResult:
         args: dict[str, Any] = {"catalog_item_id": item_id}
         if arguments:
             args["arguments"] = arguments
@@ -129,7 +148,9 @@ class QatomRail:
             return RailResult(RailOutcome.SETTLED, m.group(2), "BOUGHT", {"paid_milli": paid_milli, "text": text[:500]})
         a = _APPROVAL.search(text)
         if a:
-            self.pending[a.group(1)] = {"item_id": item_id, "arguments": arguments, "amount_milli": amount_milli}
+            if not approval_id:  # first time we see this approval: keep the exact checkout to resume
+                self._remember(a.group(1), dispatch_key,
+                               {"item_id": item_id, "arguments": arguments, "amount_milli": amount_milli})
             u = _APPROVAL_URL.search(text)
             return RailResult(RailOutcome.PENDING, APPROVAL_PREFIX + a.group(1), "APPROVAL_REQUIRED",
                               {"approval_id": a.group(1), "approval_url": u.group(1) if u else None})
@@ -144,18 +165,18 @@ class QatomRail:
         item_id = self.cfg.item_map.get(item or "")
         if item_id is None:
             return RailResult(RailOutcome.UNPAID, status="ITEM_NOT_ON_QATOM", raw={"item": item})
-        return self._checkout(item_id, arguments or {}, amount_milli)
+        return self._checkout(item_id, arguments or {}, amount_milli, dispatch_key=dapp_order_id)
 
     def get_order(self, order_id: str) -> RailResult:
         """For an approval: retry the exact same checkout with the approval id. Otherwise unknown."""
         if order_id.startswith(APPROVAL_PREFIX):
             aid = order_id[len(APPROVAL_PREFIX):]
-            p = self.pending.get(aid)
+            p = self._recall(aid)
             if not p:
                 return RailResult(RailOutcome.UNKNOWN, order_id, "APPROVAL_CONTEXT_LOST")
             res = self._checkout(p["item_id"], p["arguments"], p["amount_milli"], approval_id=aid)
-            if res.outcome is RailOutcome.SETTLED:
-                self.pending.pop(aid, None)
+            if res.outcome in (RailOutcome.SETTLED, RailOutcome.UNPAID):
+                self._forget(aid)
             elif res.outcome is RailOutcome.PENDING:  # still waiting for the owner
                 return RailResult(RailOutcome.PENDING, order_id, "APPROVAL_REQUIRED", res.raw)
             return res
