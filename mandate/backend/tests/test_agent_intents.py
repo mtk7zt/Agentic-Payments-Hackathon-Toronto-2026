@@ -108,7 +108,7 @@ def test_agent_cannot_call_owner_routes_when_owner_config_is_missing(api, monkey
     monkeypatch.delenv("MANDATE_OWNER_TOKEN")
     before = ledger.events()
     response = client.request(method, path, json=body, headers={"X-Session-Key": session})
-    assert response.status_code == 403
+    assert response.status_code == 401
     assert ledger.events() == before
 
 

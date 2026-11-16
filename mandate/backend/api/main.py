@@ -8,6 +8,7 @@ they fail closed when MANDATE_OWNER_TOKEN is unset.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import secrets
 import time
@@ -15,7 +16,7 @@ from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..core.ledger import Ledger, LedgerError
@@ -33,7 +34,34 @@ DEMO_SELLERS = {
     "seller-b.example": "0x00000000000000000000000000000000000000b2",
 }
 
+log = logging.getLogger("mandate.api")
 app = FastAPI(title="Mandate gateway", version="0.1.0")
+class CatchUnexpected:
+    """Turns an unhandled error into a JSON 500 *inside* the CORS layer, so the browser still sees CORS
+    headers and reports a server error instead of treating the gateway as offline (MND-30)."""
+
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            return await self.app(scope, receive, send)
+        started = False
+
+        async def tracked(message):
+            nonlocal started
+            started = started or message["type"] == "http.response.start"
+            await send(message)
+        try:
+            await self.app(scope, receive, tracked)
+        except Exception:
+            log.exception("unhandled error on %s", scope.get("path"))
+            if started:
+                raise
+            await JSONResponse({"detail": "internal error"}, status_code=500)(scope, receive, send)
+
+
+app.add_middleware(CatchUnexpected)  # added first, so CORS (added next) wraps it
 app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("MANDATE_CORS_ORIGINS", "http://localhost:3000").split(","),
@@ -54,6 +82,8 @@ class Strict(BaseModel):
 
 class PolicyPatch(Strict):
     expected_version: int = Field(strict=True, ge=1)
+    task_budget_cap: str | None = None  # exact decimal string, e.g. "5.000"
+    transaction_ceiling: str | None = None
     max_single_spend: str | None = None
     strict_whitelist: bool | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
@@ -79,8 +109,10 @@ class CheckpointVerification(Strict):
 
 def owner(x_owner_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("MANDATE_OWNER_TOKEN")
-    if not expected or not x_owner_token or not secrets.compare_digest(x_owner_token.encode(), expected.encode()):
-        raise HTTPException(403, "owner token required")
+    if not x_owner_token:  # no credential at all: the client needs to sign in
+        raise HTTPException(401, "owner token required", headers={"WWW-Authenticate": 'OwnerToken realm="mandate"'})
+    if not expected or not secrets.compare_digest(x_owner_token.encode(), expected.encode()):
+        raise HTTPException(403, "owner token rejected")
 
 
 def active_agent(x_session_key: str | None = Header(default=None)) -> str:
@@ -206,11 +238,12 @@ def reconcile(purchase_id: str, rail_order_id: str | None = None) -> dict[str, A
 @app.patch("/api/v1/policy", dependencies=[Depends(owner)])
 def patch_policy(body: PolicyPatch) -> dict[str, Any]:
     changes = body.model_dump(exclude_none=True)
-    if "max_single_spend" in changes:
-        try:
-            changes["max_single_spend"] = parse_milli(changes["max_single_spend"])
-        except MoneyError as exc:
-            raise HTTPException(422, str(exc)) from exc
+    for money in ("task_budget_cap", "transaction_ceiling", "max_single_spend"):
+        if money in changes:
+            try:
+                changes[money] = parse_milli(changes[money])
+            except MoneyError as exc:
+                raise HTTPException(422, f"{money}: {exc}") from exc
     if "whitelisted_sellers" in changes:
         changes["whitelisted_sellers"] = {k.lower(): v.lower() for k, v in changes["whitelisted_sellers"].items()}
     pol = guard(ledger.set_policy, **changes)
@@ -257,6 +290,16 @@ def evidence(purchase_id: str) -> dict[str, Any]:
             "redactions": ["credentials", "approval links", "session tokens"]}
 
 
+@app.get("/api/v1/events", dependencies=[Depends(owner)])
+def list_events(after: int = Query(default=0, ge=0, le=9007199254740991), limit: int = Query(default=100, ge=1, le=500),
+                purchase_id: str | None = Query(default=None, max_length=64),
+                type: str | None = Query(default=None, max_length=64, pattern="^[A-Z_]+$"),
+                stage: str | None = Query(default=None, max_length=32, pattern="^[A-Z_]+$")) -> dict[str, Any]:
+    """The full evidence log in order. `after` is the event seq, the same id the SSE stream uses."""
+    page = ledger.events_page(after_seq=after, limit=limit, purchase_id=purchase_id, event_type=type, stage=stage)
+    return {"events": page, "next": page[-1]["seq"] if len(page) == limit else None}
+
+
 @app.get("/api/v1/evidence/verify", dependencies=[Depends(owner)])
 def verify() -> dict[str, Any]:
     return ledger.verify_chain()
@@ -299,9 +342,13 @@ async def stream(request: Request, last_event_id: str | None = Header(default=No
     if secret and supplied and secrets.compare_digest(secret.encode(), supplied.encode()):
         expires = time.time() + GRANT_SECONDS
     else:
-        expires = read_grant(request.cookies.get("mandate_stream", ""), secret, ledger.mandate_id, ledger.agent_id)
+        cookie = request.cookies.get("mandate_stream", "")
+        expires = read_grant(cookie, secret, ledger.mandate_id, ledger.agent_id)
         if expires is None:
-            raise HTTPException(403, "owner stream session required")
+            if not supplied and not cookie:
+                raise HTTPException(401, "owner stream session required",
+                                    headers={"WWW-Authenticate": 'OwnerToken realm="mandate"'})
+            raise HTTPException(403, "owner stream session rejected")
     if last_event_id is not None:
         if not last_event_id.isascii() or not last_event_id.isdecimal() or len(last_event_id) > 16:
             raise HTTPException(422, "invalid Last-Event-ID")
