@@ -23,6 +23,7 @@ import hashlib
 import json
 import os
 import secrets
+import subprocess
 import sys
 import threading
 import time
@@ -143,6 +144,26 @@ def _register(http: httpx.Client, meta: dict[str, Any], redirect_uri: str) -> st
     return r.json()["client_id"]
 
 
+def restrict_to_owner(path: Path) -> None:
+    """Make the token file readable by its owner only.
+
+    POSIX: mode 0600. Windows ignores those bits, so remove inherited access and grant only the
+    current user full control with icacls. If that fails the file is deleted rather than left open.
+    """
+    if os.name != "nt":
+        os.chmod(path, 0o600)
+        return
+    user = os.environ.get("USERNAME", "")
+    domain = os.environ.get("USERDOMAIN", "")
+    who = f"{domain}\\{user}" if domain else user
+    result = subprocess.run(["icacls", str(path), "/inheritance:r", "/grant:r", f"{who}:F"],
+                            capture_output=True, text=True, check=False)
+    if not user or result.returncode != 0:
+        path.unlink(missing_ok=True)
+        raise SystemExit("Could not restrict the token file to your Windows account; it was removed. "
+                         "Run the sign-in again from your own user account.")
+
+
 def _save(data: dict[str, Any], meta: dict[str, Any], client_id: str, mcp_url: str) -> Path:
     path = token_path()
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -160,7 +181,7 @@ def _save(data: dict[str, Any], meta: dict[str, Any], client_id: str, mcp_url: s
     fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     with os.fdopen(fd, "w") as f:
         json.dump(record, f, indent=2)
-    os.chmod(path, 0o600)
+    restrict_to_owner(path)
     return path
 
 
