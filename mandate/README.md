@@ -71,6 +71,7 @@ backend/
   scenarios/                labelled attack scenarios
 frontend/                   Next.js owner cockpit
 scripts/                    smoke test, attack scenarios, Qatom sign-in
+.github/workflows/ci.yml    sandbox-only CI on every pull request
 ```
 
 ## Run it locally
