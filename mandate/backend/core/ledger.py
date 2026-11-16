@@ -304,12 +304,17 @@ class Ledger:
             settled = self._mandate()["settled"]
             expected = row["baseline"] - (settled - row["baseline_settled"])
             coverage = expected >= self.policy().task_budget_cap - settled
+            reconciled = self.conn.execute(
+                "SELECT amount, ts FROM events WHERE type IN ('WALLET_CONFIGURED','WALLET_RECONCILED') "
+                "ORDER BY seq DESC LIMIT 1").fetchone()
             return {"configured": True, "mismatch": bool(row["mismatch"]),
                     "dispatch_blocked": bool(row["mismatch"]) or not coverage,
                     "expected_milli": expected, "observed_milli": row["observed"],
                     "observed_at_settled_milli": row["observed_settled"],
                     "allocation_covered": coverage, "reference": row["reference"],
-                    "recorded_at": row["recorded_at"], "provenance": "owner_recorded"}
+                    "recorded_at": row["recorded_at"], "provenance": "owner_recorded",
+                    "last_reconciled_milli": reconciled["amount"] if reconciled else None,
+                    "last_reconciled_at": reconciled["ts"] if reconciled else None}
 
     def _wallet_input(self, balance_milli: int, reference: str) -> None:
         try:

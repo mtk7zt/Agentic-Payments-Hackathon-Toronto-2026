@@ -133,6 +133,8 @@ export interface Evt extends EvtBody {
 }
 
 export interface State {
+  allocation?: Milli;
+  walletMonitoring?: { configured: boolean; mismatch: boolean; last_reconciled_milli?: Milli | null; last_reconciled_at?: number | null };
   policy: Policy;
   policyHash: string;
   held: Milli;

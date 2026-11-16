@@ -134,6 +134,7 @@ function mapState(st: StateDTO): State {
   const claims: State["claims"] = {};
   for (const e of events) if (e.type === "DISPATCH_CLAIMED" && e.ref && e.purchaseId) claims[e.ref] = { key: e.ref, purchaseId: e.purchaseId, state: "CLAIMED" };
   return {
+    allocation: st.balances.budget,
     policy,
     policyHash: st.policy.hash,
     held: st.balances.held,
@@ -384,6 +385,7 @@ function mergeEvents(list: LedgerEventDTO[]) {
 
 let pendingPolicy: Partial<Omit<Policy, "version" | "paused">> = {};
 let policyTimer: ReturnType<typeof setTimeout> | null = null;
+let policyWaiters: ((r: TxResult) => void)[] = [];
 
 export function setPolicy(patch: Partial<Omit<Policy, "version" | "paused">>): Promise<TxResult> {
   if (!isLive() || !live || !extras) return Promise.resolve(sim.setPolicy(patch));
@@ -392,10 +394,15 @@ export function setPolicy(patch: Partial<Omit<Policy, "version" | "paused">>): P
   emit();
   pendingPolicy = { ...pendingPolicy, ...patch };
   if (policyTimer) clearTimeout(policyTimer);
-  return new Promise((resolve) => {
+  return new Promise<TxResult>((done) => {
+    // Every caller whose change is folded into this write gets the same result (none is left waiting).
+    policyWaiters.push(done);
     policyTimer = setTimeout(() => {
       const p = pendingPolicy;
       pendingPolicy = {};
+      const waiters = policyWaiters;
+      policyWaiters = [];
+      const resolve = (r: TxResult) => waiters.forEach((w) => w(r));
       const body: Parameters<typeof api.patchPolicy>[0] = { expected_version: extras!.serverVersion };
       if (p.autoApprove !== undefined) body.max_single_spend = sim.fmt(p.autoApprove);
       if (p.strict !== undefined) body.strict_whitelist = p.strict;
