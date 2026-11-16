@@ -27,9 +27,10 @@ def _deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> None:
 def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str) -> dict[str, Any]:
     """Pay for a RESERVED purchase. Safe to call once; a second call cannot claim again."""
     claim_key = ledger.claim_dispatch(purchase_id)  # durable intent, before any money moves
-    amount = ledger.purchase(purchase_id)["amount"]
+    p0 = ledger.purchase(purchase_id)
+    amount = p0["amount"]
     try:
-        res = rail.create_order(dapp_order_id=claim_key, amount_milli=amount)
+        res = rail.create_order(dapp_order_id=claim_key, amount_milli=amount, item=p0["item"])
     except Exception as exc:  # noqa: BLE001 - any adapter failure may follow an accepted payment
         # An adapter can fail after the rail accepted the request. Never assume
         # an exception proves the payment did not happen.
