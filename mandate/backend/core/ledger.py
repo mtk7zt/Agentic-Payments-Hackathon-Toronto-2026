@@ -157,7 +157,16 @@ class Ledger:
             raise LedgerError("invariant: allocation overdrawn")
 
     def _mandate(self) -> sqlite3.Row:
-        return self.conn.execute("SELECT * FROM mandate WHERE id=?", (self.mandate_id,)).fetchone()
+        with self._lock:
+            return self.conn.execute("SELECT * FROM mandate WHERE id=?", (self.mandate_id,)).fetchone()
+
+    def snapshot(self):
+        """Hold the ledger lock across several reads so they come from one consistent state.
+
+        The ledger shares one SQLite connection between threads; every read and write goes
+        through this re-entrant lock so overlapping requests never interleave on that connection.
+        """
+        return self._lock
 
     def _emit(self, type_: str, actor: str, *, purchase_id: str | None = None, amount: int | None = None,
               clause: str | None = None, ref: str | None = None, detail: str = "") -> None:
@@ -193,7 +202,8 @@ class Ledger:
         return Policy(**json.loads(self._mandate()["policy_json"]))
 
     def balances(self) -> dict[str, int]:
-        m, pol = self._mandate(), self.policy()
+        with self._lock:
+            m, pol = self._mandate(), self.policy()
         return {"budget": pol.task_budget_cap, "held": m["held"], "settled": m["settled"],
                 "available": pol.task_budget_cap - m["held"] - m["settled"]}
 
@@ -239,6 +249,10 @@ class Ledger:
 
     def verify_chain(self, checkpoint: dict[str, Any] | None = None) -> dict[str, Any]:
         """Re-hash every event. Detects edits, reordering and gaps."""
+        with self._lock:
+            return self._verify_chain(checkpoint)
+
+    def _verify_chain(self, checkpoint: dict[str, Any] | None = None) -> dict[str, Any]:
         checkpoint = self.latest_checkpoint() if checkpoint is None else checkpoint
         prev, n = GENESIS, 0
         events = self.events()
