@@ -111,6 +111,7 @@ def state() -> dict[str, Any]:
         "mandate_id": ledger.mandate_id, "rail": rail.name, "unit": "USD-TDN thousandths",
         "balances": ledger.balances(), "policy": {**json.loads(pol.canonical()), "hash": pol.hash()},
         "purchases": [view(p) for p in ledger.purchases()], "chain": ledger.verify_chain(),
+        "session_keys": ledger.session_status(),
     }
 
 
@@ -264,3 +265,9 @@ def observe_wallet(body: WalletObservation) -> dict[str, Any]:
 @app.post("/api/v1/wallet/reconcile", dependencies=[Depends(owner)])
 def reconcile_wallet(body: WalletObservation) -> dict[str, Any]:
     return guard(ledger.reconcile_wallet, body.balance_milli, body.reference)
+
+
+@app.get("/api/events", dependencies=[Depends(owner)])
+async def events(request: Request, last_event_id: str | None = Header(default=None)) -> StreamingResponse:
+    """Alias of /api/v1/stream, the path the cockpit connects to."""
+    return await stream(request, last_event_id)

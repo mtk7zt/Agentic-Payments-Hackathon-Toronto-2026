@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
 import { Badge, Logo, Ticks } from "@/components/kit";
-import { fmt } from "@/lib/ledger";
+import { fmt } from "@/lib/mandate";
 
 // ───────────────────────── the mechanism ─────────────────────────
 // A simulated agent stream. In-policy purchases travel agent → gateway → Qatom.

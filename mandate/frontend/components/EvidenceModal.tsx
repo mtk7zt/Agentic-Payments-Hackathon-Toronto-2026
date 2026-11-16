@@ -6,8 +6,8 @@ import * as Dialog from "@radix-ui/react-dialog";
 import { X } from "lucide-react";
 import { Badge, Money, stageBadge } from "./kit";
 import { Line, TXT, deliveryLine, overlay, settlementLine, sheet, utc } from "./shared";
-import { CLAUSE_TEXT, fmt, short, verifyChain } from "@/lib/ledger";
-import type { Evt, Purchase, State, Verification } from "@/lib/ledger";
+import { CLAUSE_TEXT, fmt, short, verifyChain } from "@/lib/mandate";
+import type { Evt, Purchase, State, Verification } from "@/lib/mandate";
 
 function Panel({ title, children }: { title: string; children: React.ReactNode }) {
   return (
@@ -100,11 +100,11 @@ export function EvidenceModal({ p, s, onClose, onToast }: { p: Purchase | null; 
                 </dl>
               </Panel>
 
-              <Panel title={blocked ? "Wallet impact" : "Protocol · two separate records"}>
+              <Panel title={blocked ? "Balance impact" : "Protocol · two separate records"}>
                 {blocked ? (
                   <dl>
-                    <Line k="Wallet before"><Money v={p.walletBefore} /></Line>
-                    <Line k="Wallet after"><Money v={p.walletBefore} className="text-emerald-300" /> <span className="font-mono text-[11px] text-emerald-300">Δ 0</span></Line>
+                    <Line k="Unspent before"><Money v={p.walletBefore} /></Line>
+                    <Line k="Unspent after"><Money v={p.walletBefore} className="text-emerald-300" /> <span className="font-mono text-[11px] text-emerald-300">Δ 0</span></Line>
                     <Line k="Checkout calls"><span className="font-mono">0</span></Line>
                     <Line k="Agent session key"><span className="font-mono text-rose-300">{p.revokedKey ? `${p.revokedKey} · revoked` : "not revoked"}</span></Line>
                   </dl>

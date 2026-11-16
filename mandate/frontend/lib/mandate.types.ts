@@ -33,7 +33,13 @@ export type Clause =
   | "ABOVE_TRANSACTION_CEILING"
   | "RETRY_CEILING_REACHED"
   | "INSUFFICIENT_ALLOCATION"
-  | "AGENT_FROZEN";
+  | "AGENT_FROZEN"
+  // Returned by the gateway only; the simulated ledger never produces these.
+  | "VENDOR_ADDRESS_MISMATCH"
+  | "ATTEMPT_CEILING_REACHED"
+  | "SESSION_KEY_INVALID"
+  | "POLICY_EXPIRED"
+  | "ARGUMENT_CONSTRAINT_VIOLATION";
 
 export interface Policy {
   version: number;
@@ -122,6 +128,8 @@ export interface EvtBody {
 export interface Evt extends EvtBody {
   prev: string;
   hash: string;
+  /** Gateway events keep their wire body, so the browser re-hashes exactly what the server hashed. */
+  raw?: Record<string, unknown>;
 }
 
 export interface State {

@@ -1,6 +1,6 @@
 import type { ReactNode } from "react";
-import type { Purchase } from "@/lib/ledger";
-import { fmt } from "@/lib/ledger";
+import type { Purchase } from "@/lib/mandate";
+import { fmt } from "@/lib/mandate";
 
 export type Tone = "intent" | "success" | "warning" | "danger" | "neutral";
 

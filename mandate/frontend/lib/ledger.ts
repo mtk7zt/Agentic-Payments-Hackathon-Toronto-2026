@@ -36,6 +36,11 @@ export const CLAUSE_TEXT: Record<Clause, string> = {
   RETRY_CEILING_REACHED: "This task has used all of its allowed paid attempts.",
   INSUFFICIENT_ALLOCATION: "Not enough allocation is left once held amounts are set aside.",
   AGENT_FROZEN: "The kill-switch is on. The agent's session keys are frozen.",
+  VENDOR_ADDRESS_MISMATCH: "The vendor is whitelisted, but the payment address is not the one on file.",
+  ATTEMPT_CEILING_REACHED: "This task has used all of its allowed paid attempts.",
+  SESSION_KEY_INVALID: "The agent's session key is missing, frozen or revoked.",
+  POLICY_EXPIRED: "The mandate's rules have expired, so nothing can be bought until the owner renews them.",
+  ARGUMENT_CONSTRAINT_VIOLATION: "The request's details break a rule the owner set for this item.",
 };
 
 // ───────── helpers ─────────
@@ -53,7 +58,9 @@ export function canonical(v: unknown): string {
     .join(",")}}`;
 }
 
-export const bodyOf = (e: Evt): EvtBody => ({
+/** The hashed part of an event. Gateway events hash their wire body; simulated ones hash these fields. */
+export const bodyOf = (e: Evt): EvtBody | Record<string, unknown> =>
+  e.raw ?? {
   seq: e.seq,
   ts: e.ts,
   type: e.type,
@@ -64,7 +71,7 @@ export const bodyOf = (e: Evt): EvtBody => ({
   ref: e.ref,
   detail: e.detail,
   policyHash: e.policyHash,
-});
+};
 
 export const available = (s: State) => BUDGET - s.held - s.settled;
 const keyName = (n: number) => `sk_agent04_${String(n).padStart(2, "0")}`;
@@ -511,6 +518,13 @@ export function reset() {
   }
   seed();
 })();
+
+/** Read and subscribe without React, for lib/mandate.ts. */
+export const getState = (): State => state;
+export function subscribeLedger(l: () => void): () => void {
+  listeners.add(l);
+  return () => listeners.delete(l);
+}
 
 export function useLedger(): State {
   return useSyncExternalStore(
