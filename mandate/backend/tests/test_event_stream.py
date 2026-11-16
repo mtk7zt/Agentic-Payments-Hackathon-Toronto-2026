@@ -38,7 +38,7 @@ def api(monkeypatch):
 
 def test_owner_only_grant_has_http_only_cookie_and_no_secret_response(api):
     client, ledger, owner = api
-    assert client.post("/api/v1/stream-session").status_code == 403
+    assert client.post("/api/v1/stream-session").status_code == 401
     assert client.post("/api/v1/stream-session", headers={"X-Owner-Token": "wrong"}).status_code == 403
     response = client.post("/api/v1/stream-session", headers=owner)
     assert response.status_code == 200
@@ -46,9 +46,9 @@ def test_owner_only_grant_has_http_only_cookie_and_no_secret_response(api):
     assert "HttpOnly" in cookie and "SameSite=strict" in cookie and "Max-Age=60" in cookie
     assert response.headers["cache-control"] == "no-store"
     assert next(iter(owner.values())) not in response.text + cookie
-    assert client.get("/api/v1/state").status_code == 403  # cookie is stream-only authority
+    assert client.get("/api/v1/state").status_code == 401  # cookie is stream-only authority
     before = ledger.events()
-    assert client.post("/api/v1/kill-switch", json={"engaged": True}).status_code == 403
+    assert client.post("/api/v1/kill-switch", json={"engaged": True}).status_code == 401
     assert ledger.events() == before
 
 
@@ -83,9 +83,9 @@ def test_https_cookie_is_secure_and_owner_unset_fails_closed(api, monkeypatch):
 @pytest.mark.parametrize("path", ["/api/v1/stream", "/api/events"])
 def test_stream_rejects_missing_or_invalid_grant_and_invalid_cursor(api, path):
     client, _, owner = api
-    assert client.get(path).status_code == 403
+    assert client.get(path).status_code == 401
     client.cookies.set("mandate_stream", "tampered")
-    assert client.get(path).status_code == 403
+    assert client.get(path).status_code == 403  # a credential was sent, and it is wrong
     assert client.get(path, headers={**owner, "Last-Event-ID": "garbage"}).status_code == 422
     assert client.get(path, headers={**owner, "Last-Event-ID": "-1"}).status_code == 422
 

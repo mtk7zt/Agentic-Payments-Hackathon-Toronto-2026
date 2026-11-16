@@ -208,9 +208,9 @@ def test_owner_http_lifecycle_and_agent_access(ledger, monkeypatch):
     key, agent_token = ledger.issue_session_key()
     with TestClient(gateway.app) as client:
         path = f"/api/v1/session-keys/{key}/state"
-        assert client.get("/api/v1/session-keys").status_code == 403
-        assert client.post(path, json={"state": "frozen"}).status_code == 403
-        assert client.post(path, headers={"X-Session-Key": agent_token}, json={"state": "frozen"}).status_code == 403
+        assert client.get("/api/v1/session-keys").status_code == 401
+        assert client.post(path, json={"state": "frozen"}).status_code == 401
+        assert client.post(path, headers={"X-Session-Key": agent_token}, json={"state": "frozen"}).status_code == 401
         assert client.post(path, headers=headers, json={"state": "frozen"}).status_code == 200
         assert client.get("/api/v1/catalog", headers={"X-Session-Key": agent_token}).status_code == 401
         assert client.post(path, headers=headers, json={"state": "active"}).status_code == 200

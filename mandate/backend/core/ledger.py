@@ -287,6 +287,19 @@ class Ledger:
         with self._lock:
             return [dict(r) for r in self.conn.execute("SELECT * FROM events WHERE seq>? ORDER BY seq", (after_seq,))]
 
+    def events_page(self, *, after_seq: int = 0, limit: int = 100, purchase_id: str | None = None,
+                    event_type: str | None = None, stage: str | None = None) -> list[dict[str, Any]]:
+        """Ordered page of events. `stage` filters by the purchase's current stage."""
+        sql, args = "SELECT e.* FROM events e LEFT JOIN purchases p ON p.id=e.purchase_id WHERE e.seq>?", [after_seq]
+        if purchase_id:
+            sql, args = sql + " AND e.purchase_id=?", [*args, purchase_id]
+        if event_type:
+            sql, args = sql + " AND e.type=?", [*args, event_type]
+        if stage:
+            sql, args = sql + " AND p.stage=?", [*args, stage]
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql + " ORDER BY e.seq LIMIT ?", [*args, limit])]
+
     def latest_checkpoint(self) -> dict[str, Any] | None:
         with self._lock:
             row = self.conn.execute(
@@ -369,8 +382,10 @@ class Ledger:
                     raise LedgerError("policy version mismatch; refresh state before editing")
             new = replace(cur, **changes, version=cur.version + 1)
             m = self._mandate()
-            if new.task_budget_cap < m["held"] + m["settled"]:
-                raise LedgerError("budget cannot drop below held + settled")
+            committed = m["held"] + m["settled"]
+            if new.task_budget_cap < committed:
+                raise LedgerError(f"budget {new.task_budget_cap} is below the {committed} already held or spent "
+                                  f"({m['held']} held + {m['settled']} settled, in thousandths)")
             self.conn.execute("UPDATE mandate SET policy_json=? WHERE id=?", (new.canonical(), self.mandate_id))
             self._emit("POLICY_SNAPSHOT", "owner", detail=f"Policy v{new.version} snapshot")
             return new

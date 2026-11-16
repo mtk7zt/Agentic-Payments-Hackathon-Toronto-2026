@@ -96,4 +96,4 @@ def test_wallet_routes_inherit_fail_closed_owner_auth(monkeypatch, method, path)
     monkeypatch.delenv("MANDATE_OWNER_TOKEN", raising=False)
     with TestClient(gateway.app) as client:
         response = client.request(method, path, json={"balance_milli": 100, "reference": "test snapshot"})
-    assert response.status_code == 403
+    assert response.status_code == 401
