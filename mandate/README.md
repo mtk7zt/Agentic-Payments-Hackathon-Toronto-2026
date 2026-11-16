@@ -28,6 +28,7 @@ frontend/                  Next.js 14 (App Router) + Tailwind
   lib/api.ts               typed gateway client and the /api/events SSE subscription
   lib/ledger.ts            simulated in-browser ledger used as the fallback
 scripts/smoke.py           CLI smoke test (MND-27)
+.github/workflows/ci.yml   mock-only CI: tests, lint, smoke, attacks, typecheck, build (MND-03)
 docs/SPRINTS.md            sprint blueprint: criteria, contract and verify command per ticket
 docs/MANDATE_SYSTEM_GUIDE.md  plain-language guide for judges (PDF exports alongside)
 ```
