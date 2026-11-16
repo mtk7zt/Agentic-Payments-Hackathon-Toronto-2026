@@ -28,3 +28,20 @@ The script follows the MCP authorization flow: it discovers Qatom's authorizatio
 and signs in with PKCE through a one-time `127.0.0.1` callback. The token is saved to
 `QATOM_TOKEN_FILE` (default `~/.toda-mcp-token.json`) with owner-only permissions, outside the
 repo. Then set `MANDATE_RAIL=qatom` and start the gateway. No money moves during sign-in.
+
+## One real purchase through Mandate
+
+After signing in, run one tiny purchase end to end:
+
+```
+py -m scripts.qatom_live --catalog-id 26 --amount 0.001
+```
+
+Mandate checks its rules, holds the amount and records the dispatch claim before calling Qatom.
+The script prints Qatom's approval link and waits up to five minutes while you approve, then
+settles once with Qatom's transaction id. The purchase ends as SETTLED: paid, with delivery
+handled by Qatom rather than verified by Mandate. Amounts above 0.100 are refused. If you stop
+the script, the hold stays; continue with `--resume <purchase id>`.
+
+Qatom's sign-in may not issue a refresh token. When the saved token expires, run
+`py -m scripts.qatom_login` again.

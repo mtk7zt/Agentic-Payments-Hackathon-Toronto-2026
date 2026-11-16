@@ -12,6 +12,7 @@ A timeout is reported as UNKNOWN and is never retried here.
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Protocol
@@ -133,8 +134,8 @@ class GoatFlowRail:
         if r.status_code == 409:  # order already exists for this dapp_order_id: look it up, do not re-create
             return RailResult(RailOutcome.UNKNOWN, raw=payload)
         if 400 <= r.status_code < 500:
-            return RailResult(RailOutcome.UNPAID, status=f"HTTP_{r.status_code}", raw=payload)
-        return RailResult(RailOutcome.UNKNOWN, status=f"HTTP_{r.status_code}", raw=payload)
+            return RailResult(RailOutcome.UNPAID, status=_reason(r.status_code, payload), raw=payload)
+        return RailResult(RailOutcome.UNKNOWN, status=_reason(r.status_code, payload), raw=payload)
 
     def get_order(self, order_id: str) -> RailResult:
         try:
@@ -142,7 +143,8 @@ class GoatFlowRail:
         except httpx.HTTPError as exc:
             return RailResult(RailOutcome.UNKNOWN, order_id, raw={"error": type(exc).__name__})
         if r.status_code != 200:
-            return RailResult(RailOutcome.UNKNOWN, order_id, f"HTTP_{r.status_code}", _json(r))
+            body = _json(r)
+            return RailResult(RailOutcome.UNKNOWN, order_id, _reason(r.status_code, body), body)
         res = self._result(_json(r), RailOutcome.UNKNOWN)
         return RailResult(res.outcome, order_id, res.status, res.raw)
 
@@ -150,6 +152,25 @@ class GoatFlowRail:
         r = self.http.get(f"/api/v1/orders/{order_id}/proof", headers=self._headers({}))
         r.raise_for_status()
         return _json(r)
+
+
+# A provider message is copied into evidence only if it holds nothing that looks like a credential value.
+_TOKENISH = re.compile(r"[A-Za-z0-9_\-+/=]{20,}")
+
+
+def _reason(status_code: int, payload: dict[str, Any]) -> str:
+    """`HTTP_<code>` plus the provider's own error message, so evidence says why an order failed.
+
+    Only message-like fields are kept, trimmed, and never anything that looks like a credential.
+    """
+    data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
+    for key in ("message", "msg", "error", "error_message", "detail", "reason", "code"):
+        val = data.get(key) if isinstance(data, dict) else None
+        if isinstance(val, (str, int)) and str(val).strip():
+            text = " ".join(str(val).split())[:160]
+            if not _TOKENISH.search(text):
+                return f"HTTP_{status_code}: {text}"
+    return f"HTTP_{status_code}"
 
 
 def _json(r: httpx.Response) -> dict[str, Any]:

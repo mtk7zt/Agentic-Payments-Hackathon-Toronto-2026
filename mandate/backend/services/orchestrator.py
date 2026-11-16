@@ -30,8 +30,12 @@ def deliver(ledger: Ledger, seller: Seller, purchase_id: str) -> dict[str, Any]:
     return ledger.purchase(purchase_id)
 
 
-def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str) -> dict[str, Any]:
-    """Pay for a RESERVED purchase. Safe to call once; a second call cannot claim again."""
+def execute(ledger: Ledger, rail: PaymentRail, seller: Seller | None, purchase_id: str) -> dict[str, Any]:
+    """Pay for a RESERVED purchase. Safe to call once; a second call cannot claim again.
+
+    `seller=None` means the rail delivers to the buyer itself (Qatom does): the purchase stops at
+    SETTLED, which records that it was paid and that Mandate did not verify delivery.
+    """
     claim_key = ledger.claim_dispatch(purchase_id, getattr(rail, "name", None))  # durable intent, before any money moves
     p0 = ledger.purchase(purchase_id)
     amount = p0["amount"]
@@ -45,7 +49,8 @@ def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str)
 
     if res.outcome is RailOutcome.SETTLED and res.order_id:
         ledger.settle(purchase_id, res.order_id)
-        _deliver(ledger, seller, purchase_id)
+        if seller is not None:
+            _deliver(ledger, seller, purchase_id)
     elif res.outcome is RailOutcome.UNPAID:
         ledger.close_unpaid(purchase_id, res.status or "rail refused the order")
     elif res.outcome is RailOutcome.PENDING and res.order_id:
@@ -56,7 +61,7 @@ def execute(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str)
     return ledger.purchase(purchase_id)
 
 
-def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: str,
+def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller | None, purchase_id: str,
               rail_order_id: str | None = None) -> dict[str, Any]:
     """Resolve an open purchase by asking the rail about the ORIGINAL order. Never re-creates one.
 
@@ -66,7 +71,7 @@ def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: st
     Only a definitive UNPAID answer releases the hold; anything else keeps it.
     """
     p = ledger.purchase(purchase_id)
-    if p["stage"] == Stage.RECOVERY_UNDELIVERED.value:
+    if p["stage"] == Stage.RECOVERY_UNDELIVERED.value and seller is not None:
         _deliver(ledger, seller, purchase_id)
         return ledger.purchase(purchase_id)
     if p["stage"] not in (Stage.RECOVERY_UNKNOWN.value, Stage.DISPATCHED.value):
@@ -98,7 +103,8 @@ def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: st
         return ledger.purchase(purchase_id)
     if res.outcome is RailOutcome.SETTLED:
         ledger.settle(purchase_id, res.order_id or order_id)
-        _deliver(ledger, seller, purchase_id)
+        if seller is not None:
+            _deliver(ledger, seller, purchase_id)
     elif res.outcome is RailOutcome.UNPAID:
         ledger.close_unpaid(purchase_id, res.status or "unpaid")
     else:
@@ -108,7 +114,7 @@ def reconcile(ledger: Ledger, rail: PaymentRail, seller: Seller, purchase_id: st
     return ledger.purchase(purchase_id)
 
 
-def submit(ledger: Ledger, rail: PaymentRail, seller: Seller, *, request_key: str, intent: Intent,
+def submit(ledger: Ledger, rail: PaymentRail, seller: Seller | None, *, request_key: str, intent: Intent,
            tool_call: dict[str, Any], session_key_id: str | None = None) -> dict[str, Any]:
     """Agent entry point. Idempotent on request_key."""
     purchase, created = ledger.propose(request_key=request_key, intent=intent, tool_call=tool_call,
