@@ -2,6 +2,7 @@
 import base64
 import hashlib
 import json
+import os
 import stat
 import urllib.parse
 import urllib.request
@@ -74,7 +75,10 @@ def test_login_registers_uses_pkce_and_saves_owner_only(fake, monkeypatch, tmp_p
     path = qatom_login.login(MCP)
     saved = json.loads(path.read_text())
     assert saved["access_token"] == "at_1" and saved["refresh_token"] == "rt_1" and saved["client_id"] == "cli_123"
-    assert stat.S_IMODE(path.stat().st_mode) == 0o600
+    if os.name == "nt":  # Windows: access is restricted by ACL, checked in test_windows_acl_*
+        assert path.exists()
+    else:
+        assert stat.S_IMODE(path.stat().st_mode) == 0o600
     assert fake.registered[0]["redirect_uris"][0].startswith("http://127.0.0.1:")
     # the rail reads exactly this file
     from backend.services.qatom_rail import QatomConfig
@@ -95,3 +99,28 @@ def test_state_mismatch_saves_nothing(fake, monkeypatch, tmp_path):
     with pytest.raises(SystemExit, match="state mismatch"):
         qatom_login.login(MCP)
     assert not (tmp_path / "tok.json").exists()
+
+
+def test_windows_acl_grants_only_the_current_user(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(qatom_login.os, "name", "nt")
+    monkeypatch.setenv("USERNAME", "esosa")
+    monkeypatch.setenv("USERDOMAIN", "LAPTOP")
+    monkeypatch.setattr(qatom_login.subprocess, "run",
+                        lambda args, **kw: calls.append(args) or type("R", (), {"returncode": 0})())
+    f = tmp_path / "tok.json"
+    f.write_text("{}")
+    qatom_login.restrict_to_owner(f)
+    assert calls == [["icacls", str(f), "/inheritance:r", "/grant:r", "LAPTOP\\esosa:F"]]
+    assert f.exists()
+
+
+def test_windows_acl_failure_removes_the_token_instead_of_leaving_it_open(monkeypatch, tmp_path):
+    monkeypatch.setattr(qatom_login.os, "name", "nt")
+    monkeypatch.setenv("USERNAME", "esosa")
+    monkeypatch.setattr(qatom_login.subprocess, "run", lambda args, **kw: type("R", (), {"returncode": 5})())
+    f = tmp_path / "tok.json"
+    f.write_text("{}")
+    with pytest.raises(SystemExit, match="could not restrict|Could not restrict"):
+        qatom_login.restrict_to_owner(f)
+    assert not f.exists()

@@ -77,6 +77,26 @@ jobs:
           DATABASE_URL: postgresql://postgres:ci-only-password@localhost:5432/postgres
         run: python -m backend.migrate && python -m backend.migrate
 
+  backend-windows:
+    # The owner develops on Windows: catch path, permission and shell differences before merge.
+    runs-on: windows-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: mandate
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+          cache-dependency-path: mandate/backend/requirements.txt
+      - run: pip install -r backend/requirements.txt
+      - run: python -m pytest -q
+      - run: python scripts/smoke.py
+
   frontend:
     runs-on: ubuntu-latest
     timeout-minutes: 10
