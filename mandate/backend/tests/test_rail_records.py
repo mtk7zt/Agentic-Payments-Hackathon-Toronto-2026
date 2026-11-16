@@ -96,4 +96,4 @@ def test_database_from_before_migrations_upgrades_in_place(tmp_path):
     assert row["rail"] is None and row["approval_id"] is None and row["rail_tx_id"] is None
     assert row["approval_digest"] is None
     versions = [r[0] for r in reopened.conn.execute("SELECT version FROM schema_migrations ORDER BY version")]
-    assert versions == [1, 2, 3, 4]
+    assert versions == [1, 2, 3, 4, 5]

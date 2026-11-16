@@ -142,9 +142,34 @@ def _v4_checkpoint_order(db: Any) -> None:
         db.execute(f"ALTER TABLE evidence_checkpoints ADD COLUMN issued_at_ms {_types(db)['INT']}")
 
 
+_LEDGER_TABLES = ("mandate", "wallet_monitor", "purchases", "dispatch_claims", "rail_approvals", "events",
+                  "session_keys", "evidence_checkpoints", "schema_migrations")
+
+
+def _v5_postgres_lockdown(db: Any) -> None:
+    """Close every table to every role except its owner (the gateway's own connection).
+
+    Hosted PostgreSQL (Supabase in particular) exposes the public schema through an HTTP data API to
+    roles such as `anon` and `authenticated`. Row-level security with no policies denies those roles
+    everything; the table owner bypasses RLS, so the gateway is unaffected. Grants are revoked too,
+    as a second barrier. No-op on SQLite.
+    """
+    if db.dialect != "postgresql":
+        return
+    for table in _LEDGER_TABLES:
+        db.execute(f"ALTER TABLE {table} ENABLE ROW LEVEL SECURITY")
+        db.execute(f"REVOKE ALL ON TABLE {table} FROM PUBLIC")
+    for role in ("anon", "authenticated"):
+        exists = db.execute("SELECT 1 FROM pg_roles WHERE rolname = ?", (role,)).fetchone()
+        if exists:
+            for table in _LEDGER_TABLES:
+                db.execute(f"REVOKE ALL ON TABLE {table} FROM {role}")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "base tables and append-only evidence", _v1_base),
     Migration(2, "rail records and approval binding columns", _v2_purchase_columns),
     Migration(3, "query indexes", _v3_indexes),
     Migration(4, "checkpoint issue time for ordering", _v4_checkpoint_order),
+    Migration(5, "postgres: row-level security on, public grants revoked", _v5_postgres_lockdown),
 )
