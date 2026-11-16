@@ -53,6 +53,27 @@ NEXT_PUBLIC_MANDATE_API_URL=http://localhost:8000 npm run dev
 
 ## What the gateway guarantees
 
+Read the [backend architecture and state machine](docs/ARCHITECTURE.md) and
+[security model and limitations](SECURITY.md) before configuring a live rail.
+API authority separation does not provide operating-system isolation for agent
+code. Mock verification is distinct from observed live payment evidence.
+
+For a backend-only PowerShell quickstart, run these from the `mandate` directory:
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\python.exe -m pip install -r backend/requirements.txt
+.\.venv\Scripts\python.exe -m pytest backend/tests -q
+$env:MANDATE_RAIL = "mock"
+$env:MANDATE_SELLER_MODE = "mock"
+.\.venv\Scripts\python.exe -m uvicorn backend.api.main:app --host 127.0.0.1 --port 8000
+```
+
+Owner routes remain disabled until `MANDATE_OWNER_TOKEN` is supplied privately to
+the gateway process. API code does not automatically load `.env`; when using an
+ignored local env file, start uvicorn with `--env-file .env`. Keep the rail and
+seller modes explicitly mock for offline verification. No frontend is needed.
+
 | Guarantee | Where | Test |
 | --- | --- | --- |
 | No float money. `0.040` is stored as `40`; one unit is 1 000 base units of a 6-decimal token. | `models/money.py` | `test_money_is_exact` |
@@ -120,7 +141,7 @@ Known gaps, stated plainly:
 
 - **Not run against the live API.** The adapter is tested against a mocked transport only. The reference does not document the create-order response fields, so `GoatFlowRail._order_id` accepts the common shapes and must be checked against a real response (MND-01).
 - **Order creation is not payment.** `POST /api/v1/orders` opens an order and returns payment terms. The payer-side authorization that actually moves USDC is not implemented, so a live order stays `DISPATCHED` until it is paid some other way and `reconcile` sees `PAYMENT_CONFIRMED`.
-- **Qatom.** No Qatom contract is assumed anywhere. It plugs in as another `PaymentRail` once its API is confirmed.
+- **Qatom.** The adapter and observed two-step approval contract landed in PR #3. Pending approval context is still in memory; durable exact authorization/resume and end-to-end provider verification remain separate work. See `docs/rails/QATOM.md`.
 - **The cockpit has a live data layer but can't log in yet.** `frontend/lib/mandate.ts` reads state over REST and events over SSE at `/api/events` when `NEXT_PUBLIC_MANDATE_API_URL` is set, and falls back to the simulated ledger (`frontend/lib/ledger.ts`) within about a second if the gateway is unreachable, retrying every 10 s. State, stream and approvals are now owner-only, and the cockpit does not yet send an owner credential, so against this backend it falls back to the simulation. Adding an owner session to the cockpit is MND-17. The seller-failure and rail-timeout demo keys exist only in the simulation.
 - **Owner auth is a single shared token** (`MANDATE_OWNER_TOKEN`). Owner routes deny all requests when it is unset. Configure it before issuing agent sessions or using owner state, evidence, approvals or event-stream endpoints.
 - Not affiliated with Y Combinator, GOAT Network or Qatom.
