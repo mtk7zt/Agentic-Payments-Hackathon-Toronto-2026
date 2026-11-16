@@ -71,6 +71,10 @@ class SessionChange(Strict):
     state: SessionState
 
 
+class CheckpointVerification(Strict):
+    checkpoint: dict[str, Any]
+
+
 def owner(x_owner_token: str | None = Header(default=None)) -> None:
     expected = os.environ.get("MANDATE_OWNER_TOKEN")
     if not expected or not x_owner_token or not secrets.compare_digest(x_owner_token.encode(), expected.encode()):
@@ -215,12 +219,29 @@ def evidence(purchase_id: str) -> dict[str, Any]:
     p = guard(ledger.purchase, purchase_id)
     return {"schema": "mandate.evidence.v1", "purchase": view(p),
             "events": [e for e in ledger.events() if e["purchase_id"] == purchase_id],
-            "chain": ledger.verify_chain(), "redactions": ["credentials", "approval links", "session tokens"]}
+            "chain": ledger.verify_chain(), "checkpoint": ledger.latest_checkpoint(),
+            "redactions": ["credentials", "approval links", "session tokens"]}
 
 
 @app.get("/api/v1/evidence/verify", dependencies=[Depends(owner)])
 def verify() -> dict[str, Any]:
     return ledger.verify_chain()
+
+
+@app.post("/api/v1/evidence/verify", dependencies=[Depends(owner)])
+def verify_checkpoint(body: CheckpointVerification) -> dict[str, Any]:
+    return ledger.verify_chain(checkpoint=body.checkpoint)
+
+
+@app.post("/api/v1/evidence/checkpoints", dependencies=[Depends(owner)])
+def create_checkpoint() -> dict[str, Any]:
+    return guard(ledger.create_checkpoint)
+
+
+@app.get("/api/v1/evidence/checkpoint", dependencies=[Depends(owner)])
+def latest_checkpoint() -> dict[str, Any]:
+    checkpoint = ledger.latest_checkpoint()
+    return {"checkpoint": None, "note": "No signed checkpoint exists."} if checkpoint is None else checkpoint
 
 
 @app.get("/api/v1/stream", dependencies=[Depends(owner)])
