@@ -2,7 +2,7 @@
 
 GoatFlowRail talks to the GOAT Flow x402 merchant API. MockRail is a
 deterministic stand-in for tests and demos. A Qatom rail plugs in here once
-its contract is confirmed (MND-01); nothing about Qatom is assumed.
+its contract was confirmed (MND-01): see services/qatom_rail.py.
 
 The caller (services/orchestrator.py) records a dispatch claim BEFORE calling
 `create_order`, and passes the claim key as `dapp_order_id`. GOAT Flow rejects
@@ -40,7 +40,7 @@ class RailResult:
 class PaymentRail(Protocol):
     name: str
 
-    def create_order(self, *, dapp_order_id: str, amount_milli: int) -> RailResult: ...
+    def create_order(self, *, dapp_order_id: str, amount_milli: int, item: str | None = None) -> RailResult: ...
     def get_order(self, order_id: str) -> RailResult: ...
     def get_proof(self, order_id: str) -> dict[str, Any]: ...
 
@@ -111,7 +111,7 @@ class GoatFlowRail:
         status = data.get("status") if isinstance(data.get("status"), str) else None
         return RailResult(_STATUS.get(status or "", default), self._order_id(body), status, body)
 
-    def create_order(self, *, dapp_order_id: str, amount_milli: int) -> RailResult:
+    def create_order(self, *, dapp_order_id: str, amount_milli: int, **_: Any) -> RailResult:
         body: dict[str, Any] = {
             "dapp_order_id": dapp_order_id,
             "chain_id": self.cfg.chain_id,
@@ -169,7 +169,7 @@ class MockRail:
         self.orders: dict[str, dict[str, Any]] = {}
         self.create_calls = 0
 
-    def create_order(self, *, dapp_order_id: str, amount_milli: int) -> RailResult:
+    def create_order(self, *, dapp_order_id: str, amount_milli: int, **_: Any) -> RailResult:
         self.create_calls += 1
         if dapp_order_id in self.orders:  # mirrors GOAT Flow: duplicates are rejected, never re-opened
             return RailResult(RailOutcome.UNKNOWN, raw={"error": "order already exists"})
@@ -192,6 +192,10 @@ class MockRail:
 
 
 def rail_from_env() -> PaymentRail:
-    if os.environ.get("MANDATE_RAIL", "mock").lower() == "goat":
+    choice = os.environ.get("MANDATE_RAIL", "mock").lower()
+    if choice == "goat":
         return GoatFlowRail(GoatFlowConfig.from_env())
+    if choice == "qatom":
+        from .qatom_rail import QatomConfig, QatomRail
+        return QatomRail(QatomConfig.from_env())
     return MockRail()
