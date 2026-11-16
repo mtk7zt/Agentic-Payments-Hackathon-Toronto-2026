@@ -110,6 +110,9 @@ def main() -> int:
             return type(body).__name__
         order_id = cases[0][1]["rail_order_id"]
         status = rail.get_order(order_id) if order_id else None
+        why = [e["detail"] for e in ledger.events() if e["type"] in ("HOLD_RELEASED", "OUTCOME_UNKNOWN")]
+        if why:
+            print("\nRail answer:", why[-1])
         print("\nMND-01 Testnet3 contract (values redacted):", json.dumps({
             "create_order_status": cases[0][1]["stage"],
             "order_status": status.status if status else None,
