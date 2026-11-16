@@ -7,13 +7,13 @@ they fail closed when MANDATE_OWNER_TOKEN is unset.
 """
 from __future__ import annotations
 
-import asyncio
 import json
 import os
 import secrets
+import time
 from typing import Any
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
@@ -26,6 +26,7 @@ from ..models.purchase import PurchaseIn
 from ..services import orchestrator
 from ..services.payment_rail import rail_from_env
 from ..services.seller import seller_from_env
+from .streams import GRANT_SECONDS, mint_grant, read_grant, stream_frames
 
 DEMO_SELLERS = {
     "seller-a.example": "0x00000000000000000000000000000000000000a1",
@@ -37,6 +38,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=os.environ.get("MANDATE_CORS_ORIGINS", "http://localhost:3000").split(","),
     allow_methods=["*"], allow_headers=["*"],
+    allow_credentials=True,
 )
 
 ledger = Ledger(os.environ.get("MANDATE_DB", ":memory:"))
@@ -244,28 +246,40 @@ def latest_checkpoint() -> dict[str, Any]:
     return {"checkpoint": None, "note": "No signed checkpoint exists."} if checkpoint is None else checkpoint
 
 
-@app.get("/api/v1/stream", dependencies=[Depends(owner)])
-async def stream(request: Request, last_event_id: str | None = Header(default=None)) -> StreamingResponse:
-    """Server-sent events, one per ledger event. Resumes from Last-Event-ID; read-only."""
-    cursor = int(last_event_id) if last_event_id and last_event_id.isdigit() else 0
+@app.post("/api/v1/stream-session", dependencies=[Depends(owner)])
+def stream_session(request: Request, response: Response) -> dict[str, int]:
+    """Grant only read-only SSE authority; no credential is placed in a URL."""
+    secret = os.environ["MANDATE_OWNER_TOKEN"]
+    response.set_cookie("mandate_stream", mint_grant(secret, ledger.mandate_id, ledger.agent_id),
+                        max_age=GRANT_SECONDS, httponly=True, secure=request.url.scheme == "https",
+                        samesite="strict", path="/api")
+    response.headers["Cache-Control"] = "no-store"
+    return {"expires_in": GRANT_SECONDS}
 
-    async def gen():
-        nonlocal cursor
-        yield "retry: 2000\n\n"
-        idle = 0
-        while not await request.is_disconnected():
-            fresh = ledger.events(after_seq=cursor)
-            for e in fresh:
-                cursor = e["seq"]
-                yield f"id: {e['seq']}\nevent: ledger.appended\ndata: {json.dumps(e, separators=(',', ':'))}\n\n"
-            idle = 0 if fresh else idle + 1
-            if idle >= 30:  # heartbeat roughly every 15 s
-                idle = 0
-                yield ": keep-alive\n\n"
-            await asyncio.sleep(0.5)
 
-    return StreamingResponse(gen(), media_type="text/event-stream",
-                             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
+@app.get("/api/events")
+@app.get("/api/v1/stream")
+async def stream(request: Request, last_event_id: str | None = Header(default=None),
+                 after_seq: int = Query(default=0, ge=0, le=9007199254740991)) -> StreamingResponse:
+    """Owner header or signed browser cookie; scoped, expiring, read-only SSE."""
+    secret = os.environ.get("MANDATE_OWNER_TOKEN", "")
+    supplied = request.headers.get("x-owner-token", "")
+    if secret and supplied and secrets.compare_digest(secret.encode(), supplied.encode()):
+        expires = time.time() + GRANT_SECONDS
+    else:
+        expires = read_grant(request.cookies.get("mandate_stream", ""), secret, ledger.mandate_id, ledger.agent_id)
+        if expires is None:
+            raise HTTPException(403, "owner stream session required")
+    if last_event_id is not None:
+        if not last_event_id.isascii() or not last_event_id.isdecimal() or len(last_event_id) > 16:
+            raise HTTPException(422, "invalid Last-Event-ID")
+        after_seq = int(last_event_id)
+        if after_seq > 9007199254740991:
+            raise HTTPException(422, "invalid Last-Event-ID")
+    def valid() -> bool:
+        return time.time() < expires and os.environ.get("MANDATE_OWNER_TOKEN") == secret
+    return StreamingResponse(stream_frames(request, ledger, after_seq, valid), media_type="text/event-stream",
+                             headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
 
 
 @app.get("/api/v1/wallet", dependencies=[Depends(owner)])
@@ -286,9 +300,3 @@ def observe_wallet(body: WalletObservation) -> dict[str, Any]:
 @app.post("/api/v1/wallet/reconcile", dependencies=[Depends(owner)])
 def reconcile_wallet(body: WalletObservation) -> dict[str, Any]:
     return guard(ledger.reconcile_wallet, body.balance_milli, body.reference)
-
-
-@app.get("/api/events", dependencies=[Depends(owner)])
-async def events(request: Request, last_event_id: str | None = Header(default=None)) -> StreamingResponse:
-    """Alias of /api/v1/stream, the path the cockpit connects to."""
-    return await stream(request, last_event_id)

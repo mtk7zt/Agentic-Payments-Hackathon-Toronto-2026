@@ -10,7 +10,8 @@ import { KillSwitch, RevocationSlip } from "./KillSwitch";
 import { PolicyMatrix } from "./PolicyMatrix";
 import { SessionKeysPanel, WalletPanel } from "./LivePanels";
 import { TransactionStream } from "./TransactionStream";
-import { clearNotice, isLive, release, reloadState, reset, run, scenarioAvailable, useLive, useMandate, useMode, useNotice } from "@/lib/mandate";
+import { clearNotice, connectOwner, isLive, release, reloadState, reset, run, scenarioAvailable, useLive, useMandate, useMode, useNotice } from "@/lib/mandate";
+import { API_URL } from "@/lib/api";
 import type { ScenarioKey } from "@/lib/mandate";
 
 const TRIGGERS: { k: ScenarioKey; label: string; led: string }[] = [
@@ -32,6 +33,8 @@ export function Cockpit() {
   const [inspectId, setInspectId] = useState<string | null>(null);
   const [toast, setToast] = useState("");
   const [now, setNow] = useState(Date.now());
+  const [credential, setCredential] = useState("");
+  const [connecting, setConnecting] = useState(false);
   const seenPending = useRef<Set<string>>(new Set(s.purchases.filter((p) => p.stage === "PENDING_APPROVAL").map((p) => p.id)));
 
   useEffect(() => {
@@ -63,6 +66,19 @@ export function Cockpit() {
     <MotionConfig reducedMotion="user">
     <div data-locked={locked} className="relative flex min-h-screen flex-col">
       <CockpitHeader s={s} mode={mode} onKill={() => setKill(true)} />
+      {API_URL && mode === "signin" && (
+        <form className="flex flex-wrap items-center gap-3 border-b border-white/10 px-5 py-3" onSubmit={async (event) => {
+          event.preventDefault(); setConnecting(true);
+          try { const result = await connectOwner(credential); if (!result.ok) setToast(result.error ?? "Connection failed"); }
+          finally { setCredential(""); setConnecting(false); }
+        }}>
+          <p role="status" className="text-sm">Sign in as the owner to see gateway data. Until then the simulated ledger is shown.</p>
+          <label className="text-sm" htmlFor="owner-credential">Owner credential</label>
+          <input id="owner-credential" type="password" autoComplete="off" value={credential}
+            onChange={(event) => setCredential(event.target.value)} className="min-h-[44px] rounded border border-white/20 bg-slate-950 px-3 text-content" />
+          <button className="btn min-h-[44px]" type="submit" disabled={!credential || connecting}>{connecting ? "Connecting…" : "Connect owner"}</button>
+        </form>
+      )}
 
       {/* Connection and action status. Polite, so it never interrupts a screen reader mid-sentence. */}
       <div role="status" aria-live="polite" aria-atomic="true">
@@ -116,7 +132,7 @@ export function Cockpit() {
         <div className={`mx-auto flex max-w-[1600px] items-center gap-2 overflow-x-auto px-5 py-2.5 lg:px-8 ${locked ? "border-t border-white/[0.08]" : ""}`}>
           <span className="eyebrow mr-1 hidden shrink-0 md:block">Demo keys</span>
           {TRIGGERS.map((t) => (
-            <button key={t.k} type="button" disabled={locked || !scenarioAvailable(t.k)} title={scenarioAvailable(t.k) ? undefined : "Needs a failing seller or a silent rail: simulated ledger only"} onClick={() => run(t.k)} className="btn-ghost lockable shrink-0 text-[12.5px]">
+            <button key={t.k} type="button" disabled={locked || mode === "connecting" || !scenarioAvailable(t.k)} title={scenarioAvailable(t.k) ? undefined : "Needs a failing seller or a silent rail: simulated ledger only"} onClick={() => run(t.k)} className="btn-ghost lockable shrink-0 text-[12.5px]">
               <span aria-hidden="true" className={`led ${locked ? "bg-amber-800" : t.led}`} />
               {t.label}
             </button>
