@@ -227,8 +227,8 @@ def test_owner_http_lifecycle_and_agent_access(ledger, monkeypatch):
 
 
 def test_offline_smoke_explicitly_reissues_key_after_attack(monkeypatch, capsys):
-    monkeypatch.setattr("sys.argv", ["smoke.py"])
-    assert smoke.main() == 0
+    monkeypatch.setattr("sys.argv", ["smoke.py", "--scenarios"])
+    assert smoke.main() == 1  # Intentional UNKNOWN still proves containment but cannot signal success.
     output = capsys.readouterr().out
     assert "MOCK owner issued a fresh session key" in output
     assert "RECOVERY_UNKNOWN" in output and '"intact": true' in output
