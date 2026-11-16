@@ -87,6 +87,7 @@ class PolicyPatch(Strict):
     max_single_spend: str | None = None
     strict_whitelist: bool | None = None
     max_attempts: int | None = Field(default=None, ge=1, le=5)
+    repeat_window_s: int | None = Field(default=None, ge=60, le=30 * 86_400)
     whitelisted_sellers: dict[str, str] | None = None
 
 

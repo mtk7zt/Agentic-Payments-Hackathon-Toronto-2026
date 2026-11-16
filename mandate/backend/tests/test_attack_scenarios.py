@@ -46,3 +46,32 @@ def test_fixtures_are_labelled_and_reasons_do_not_claim_detection():
                    Clause.ABOVE_TRANSACTION_CEILING, Clause.ATTEMPT_CEILING_REACHED):
         text = CLAUSE_TEXT[clause].lower()
         assert "inject" not in text and "detect" not in text and "malicious" not in text
+
+
+def test_weekly_household_order_is_never_blocked_by_the_loop_guard(monkeypatch):
+    """The same item from the same seller once a week, for ten weeks: every order goes through."""
+    import backend.core.ledger as ledger_mod
+    from backend.core.ledger import Ledger
+    from backend.core.policy import Intent, Policy
+    from backend.services import orchestrator
+    from backend.services.payment_rail import MockRail
+    from backend.services.seller import MockSeller
+
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(ledger_mod.time, "time", lambda: clock[0])
+    led = Ledger(policy=Policy(whitelisted_sellers={"dairy.example": "0xa1"}, task_budget_cap=5000))
+    stages, rail = [], MockRail()
+    for week in range(10):
+        p = orchestrator.submit(led, rail, MockSeller(), request_key=f"week-{week}",
+                                intent=Intent("dairy.example", "0xa1", "oat-milk-12", 50), tool_call={})
+        stages.append(p["stage"])
+        clock[0] += 7 * 86_400
+    assert stages == ["VERIFIED"] * 10
+
+
+def test_loop_inside_the_window_is_still_stopped(monkeypatch):
+    import backend.core.ledger as ledger_mod
+    clock = [1_800_000_000.0]
+    monkeypatch.setattr(ledger_mod.time, "time", lambda: clock[0])
+    o = runaway_loop(20)
+    assert o.checkout_calls == 5 and set(o.clauses[5:]) == {"ATTEMPT_CEILING_REACHED"}
