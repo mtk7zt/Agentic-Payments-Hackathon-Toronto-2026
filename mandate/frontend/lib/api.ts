@@ -8,7 +8,8 @@
  * Owner routes need the X-Owner-Token header. For local development only, the
  * token is read from NEXT_PUBLIC_MANDATE_OWNER_TOKEN. A NEXT_PUBLIC_ value is
  * compiled into the browser bundle, so it must never be set for a shared or
- * deployed build. Real owner sign-in is tracked as MND-17.
+ * deployed build. Signed-in owners pass the token through setOwnerCredential,
+ * which keeps it in memory only.
  *
  * Route map (owner = needs X-Owner-Token):
  *   GET   /health                                    public    { status, rail }
@@ -30,14 +31,19 @@
  *   POST  /api/v1/wallet/configure                   owner     WalletDTO
  *   POST  /api/v1/wallet/observations                owner     WalletDTO
  *   POST  /api/v1/wallet/reconcile                   owner     WalletDTO
- *   GET   /api/v1/stream, /api/events (SSE)          owner     ledger events
+ *   POST  /api/v1/stream-session                     owner     { expires_in } + read-only stream cookie
+ *   GET   /api/v1/stream, /api/events (SSE)          owner     ledger events (header or stream cookie)
  */
 import type { BackendPolicyClause, BackendPurchaseStage, LedgerEventDTO, PurchaseRequestDTO } from "./mandate.types";
 export type { LedgerEventDTO } from "./mandate.types";
 
 export const API_URL = (process.env.NEXT_PUBLIC_MANDATE_API_URL ?? "").replace(/\/$/, "");
 /** Dev-only. See the note at the top of this file and frontend/.env.example. */
-const OWNER_TOKEN = process.env.NEXT_PUBLIC_MANDATE_OWNER_TOKEN ?? "";
+const DEV_OWNER_TOKEN = process.env.NEXT_PUBLIC_MANDATE_OWNER_TOKEN ?? "";
+let ownerCredential = "";
+/** The signed-in owner credential. Memory-only: never localStorage, sessionStorage, a URL or build-time env. */
+export function setOwnerCredential(value: string) { ownerCredential = value; }
+const ownerToken = () => ownerCredential || DEV_OWNER_TOKEN;
 
 export type RailName = "mock" | "goat" | "qatom" | (string & {});
 export type SessionState = "active" | "frozen" | "revoked";
@@ -202,8 +208,10 @@ async function call<T>(path: string, init?: RequestInit & { timeoutMs?: number; 
   try {
     r = await fetch(`${API_URL}${path}`, {
       ...rest,
+      cache: "no-store",
+      credentials: "include",
       signal: ctl.signal,
-      headers: { "Content-Type": "application/json", ...(owner && OWNER_TOKEN ? { "X-Owner-Token": OWNER_TOKEN } : {}), ...rest.headers },
+      headers: { "Content-Type": "application/json", ...(owner && ownerToken() ? { "X-Owner-Token": ownerToken() } : {}), ...rest.headers },
     });
   } catch (err) {
     throw new ApiError(0, err instanceof Error ? err.message : "network error");
@@ -231,6 +239,7 @@ const enc = encodeURIComponent;
 
 export const api = {
   health: () => call<{ status: string; rail: RailName }>("/health", { owner: false, timeoutMs: 1500 }),
+  streamSession: () => call<{ expires_in: number }>("/api/v1/stream-session", post()),
   state: (timeoutMs = 8000) => call<StateDTO>("/api/v1/state", { timeoutMs }),
 
   // purchases
@@ -258,3 +267,43 @@ export const api = {
   observeWallet: (balance_milli: number, reference: string) => call<WalletDTO>("/api/v1/wallet/observations", post({ balance_milli, reference })),
   reconcileWallet: (balance_milli: number, reference: string) => call<WalletDTO>("/api/v1/wallet/reconcile", post({ balance_milli, reference })),
 };
+/**
+ * Server-sent ledger events from /api/events. The browser reconnects by itself
+ * and resends Last-Event-ID, so the stream resumes where it stopped.
+ */
+export function subscribe(onEvent: (e: LedgerEventDTO) => void, onStatus?: (s: "open" | "stale") => void,
+  onReset?: () => void): () => void {
+  if (!API_URL || typeof EventSource === "undefined") return () => {};
+  let stopped = false;
+  let cursor = 0;
+  let es: EventSource | null = null;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const retry = (reset = false) => {
+    es?.close();
+    if (timer) clearTimeout(timer);
+    onStatus?.("stale");
+    if (reset) { cursor = 0; onReset?.(); }
+    if (!stopped) timer = setTimeout(open, 2000);
+  };
+  const open = async () => {
+    try {
+      await api.streamSession();
+      if (stopped) return;
+      es = new EventSource(`${API_URL}/api/events?after_seq=${cursor}`, { withCredentials: true });
+      es.addEventListener("ledger.appended", (message) => {
+        try {
+          const event = JSON.parse((message as MessageEvent).data) as LedgerEventDTO;
+          if (!Number.isSafeInteger(event.seq) || event.seq !== cursor + 1) { retry(true); return; }
+          cursor = event.seq;
+          onEvent(event);
+        } catch { retry(true); }
+      });
+      es.addEventListener("stream.reset", () => retry(true));
+      es.addEventListener("session.expired", () => retry());
+      es.onopen = () => onStatus?.("open");
+      es.onerror = () => retry();
+    } catch { retry(); }
+  };
+  void open();
+  return () => { stopped = true; es?.close(); if (timer) clearTimeout(timer); };
+}

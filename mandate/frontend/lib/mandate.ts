@@ -13,7 +13,7 @@
  * one is running.
  */
 import { useSyncExternalStore } from "react";
-import { API_URL, ApiError, api, describe, kindOf } from "./api";
+import { API_URL, ApiError, api, describe, kindOf, setOwnerCredential, subscribe } from "./api";
 import type { ErrorKind, KillSwitchDTO, PurchaseDTO, RailName, SessionKeyDTO, SessionState, StateDTO, WalletDTO } from "./api";
 import * as sim from "./ledger";
 import type { Clause, Evt, EvtType, LedgerEventDTO, Policy, Purchase, ScenarioKey, Stage, State, TxResult } from "./mandate.types";
@@ -46,6 +46,11 @@ export interface Notice {
 
 const POLL_MS = 3000;
 const RETRY_MS = 10_000;
+
+/** Closes the server-sent event stream; null while no stream is open. */
+let stopStream: (() => void) | null = null;
+/** True while the authenticated event stream is open. Polling keeps running as the fallback. */
+let streaming = false;
 
 let mode: Mode = API_URL ? "connecting" : "simulated";
 let live: State | null = null;
@@ -221,8 +226,15 @@ function stopPolling() {
   poller = null;
 }
 
+function closeStream() {
+  stopStream?.();
+  stopStream = null;
+  streaming = false;
+}
+
 function fallBack(err: unknown) {
   stopPolling();
+  closeStream();
   const next: Mode = kindOf(err) === "auth" ? "signin" : "simulated";
   const changed = next !== mode;
   mode = next;
@@ -231,7 +243,9 @@ function fallBack(err: unknown) {
   if (API_URL && !retry) retry = setTimeout(() => { retry = null; connect(); }, RETRY_MS);
 }
 
-async function connect() {
+async function connect(): Promise<boolean> {
+  stopStream?.();
+  stopStream = null;
   try {
     await fetchAll(1500);
     const was = mode;
@@ -240,9 +254,32 @@ async function connect() {
     else emit();
     stopPolling();
     poller = setInterval(refresh, POLL_MS);
+    // The stream makes updates arrive at once; the poll above still covers a dropped stream.
+    if (!stopStream) {
+      stopStream = subscribe(
+        () => scheduleRefresh(),
+        (status) => {
+          streaming = status === "open";
+          emit();
+          if (streaming) void refresh();
+        },
+        () => void refresh(),
+      );
+    }
+    return true;
   } catch (err) {
     fallBack(err);
+    return false;
   }
+}
+
+/** Explicit owner connection. Refreshing the tab forgets the credential. */
+export async function connectOwner(credential: string): Promise<TxResult> {
+  setOwnerCredential(credential);
+  token = null;
+  if (retry) { clearTimeout(retry); retry = null; }
+  const connected = await connect();
+  return connected ? { ok: true } : { ok: false, error: "Owner connection failed. Check the credential and gateway." };
 }
 
 function start() {
@@ -268,7 +305,7 @@ function subscribeAll(l: () => void) {
     off();
   };
 }
-const snapshot = (): State => (mode === "live" && live ? live : sim.getState());
+const snapshot = (): State => (live && mode !== "simulated" ? live : sim.getState());
 
 export const useMandate = (): State => useSyncExternalStore(subscribeAll, snapshot, snapshot);
 export const useMode = (): Mode => useSyncExternalStore(subscribeAll, () => mode, () => mode);
@@ -277,6 +314,7 @@ export const useLive = (): LiveExtras | null =>
   useSyncExternalStore(subscribeAll, () => (mode === "live" ? extras : null), () => null);
 export const useNotice = (): Notice | null => useSyncExternalStore(subscribeAll, () => notice, () => null);
 export const isLive = () => mode === "live";
+export const useStreaming = (): boolean => useSyncExternalStore(subscribeAll, () => streaming, () => false);
 /** Vendors the policy panel offers as toggles. */
 export const knownVendors = (s: State): string[] =>
   Array.from(new Set([...(isLive() ? Object.keys(addressBook) : ["seller-a", "seller-b"]), ...s.policy.vendors]));

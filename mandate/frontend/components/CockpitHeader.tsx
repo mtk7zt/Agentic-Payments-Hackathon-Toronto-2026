@@ -5,7 +5,7 @@ import { useState } from "react";
 import Link from "next/link";
 import { ArrowLeft, Check, ChevronsUpDown } from "lucide-react";
 import { Logo } from "./kit";
-import { BUDGET, available, fmt } from "@/lib/mandate";
+import { BUDGET, available, fmt, useStreaming } from "@/lib/mandate";
 import type { Mode, State } from "@/lib/mandate";
 import { API_URL } from "@/lib/api";
 
@@ -19,6 +19,7 @@ function Stat({ label, v, tone = "text-content" }: { label: string; v: number; t
 }
 
 export function CockpitHeader({ s, mode, onKill }: { s: State; mode: Mode; onKill: () => void }) {
+  const streaming = useStreaming();
   const [menu, setMenu] = useState(false);
   const locked = s.policy.paused;
   return (
@@ -65,7 +66,7 @@ export function CockpitHeader({ s, mode, onKill }: { s: State; mode: Mode; onKil
             <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Source</p>
             <p className={`flex items-center gap-2 font-mono text-[12px] leading-[20px] ${mode === "live" ? "text-emerald-300" : "text-slate-400"}`}>
               <span aria-hidden="true" className={`led ${mode === "live" ? "bg-emerald-400" : mode === "connecting" ? "bg-amber-400" : "bg-slate-500"}`} />
-              {mode === "live" ? "gateway · polling 3 s" : mode === "connecting" ? "connecting" : mode === "signin" ? "sign in needed · simulated" : API_URL ? "gateway offline · simulated" : "simulated"}
+              {mode === "live" ? (streaming ? "gateway · live stream" : "gateway · polling 3 s") : mode === "connecting" ? "connecting" : mode === "signin" ? "sign in needed · simulated" : API_URL ? "gateway offline · simulated" : "simulated"}
             </p>
           </div>
         </div>
