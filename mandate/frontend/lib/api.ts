@@ -21,6 +21,7 @@
  *   POST  /api/v1/purchases/{id}/approve             owner     { digest } -> PurchaseDTO
  *   POST  /api/v1/purchases/{id}/reject              owner     PurchaseDTO
  *   POST  /api/v1/purchases/{id}/reconcile           owner     PurchaseDTO (?rail_order_id=)
+ *   POST  /api/v1/purchases/{id}/resolve             owner     { outcome: PAID|UNPAID, reference, note } -> PurchaseDTO
  *   GET   /api/v1/purchases/{id}/evidence            owner     EvidenceDTO
  *   GET   /api/v1/evidence/verify                    owner     ChainDTO
  *   PATCH /api/v1/policy                             owner     PolicyDTO (expected_version; 409 if stale)
@@ -267,6 +268,9 @@ export const api = {
   // purchases
   propose: (body: PurchaseRequestDTO, token: string) =>
     call<PurchaseDTO>("/api/v1/purchases", { ...post(body, { "X-Session-Key": token }), owner: false }),
+  /** Owner path when the rail cannot be asked: record what the provider shows, with its reference. */
+  resolve: (id: string, outcome: "PAID" | "UNPAID", reference: string, note = "") =>
+    call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/resolve`, post({ outcome, reference, note })),
   approval: (id: string) => call<ApprovalSummaryDTO>(`/api/v1/purchases/${enc(id)}/approval`),
   /** Approves exactly the terms in `approval(id)`. A changed purchase or policy makes the digest stale (409). */
   approve: (id: string, digest: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/approve`, post({ digest })),

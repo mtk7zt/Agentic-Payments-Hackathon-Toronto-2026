@@ -713,6 +713,11 @@ class Ledger:
                 return False
             if claim["state"] == "UNPAID":
                 raise LedgerError("claim was closed as unpaid")
+            other = self.conn.execute(
+                "SELECT id FROM purchases WHERE id<>? AND (rail_order_id=? OR rail_tx_id=?) AND stage IN (?,?,?)",
+                (purchase_id, rail_order_id, rail_order_id, *[s.value for s in PAID])).fetchone()
+            if other:  # one rail payment can only ever pay for one purchase
+                raise LedgerError(f"rail order {rail_order_id} already settled purchase {other['id']}")
             self.conn.execute("UPDATE mandate SET held=held-?, settled=settled+? WHERE id=?",
                               (p["amount"], p["amount"], self.mandate_id))
             self.conn.execute("UPDATE dispatch_claims SET state='SETTLED' WHERE purchase_id=?", (purchase_id,))
@@ -740,6 +745,43 @@ class Ledger:
             self._stage(purchase_id, Stage.RECOVERY_UNKNOWN)
             self._emit("OUTCOME_UNKNOWN", "executor", purchase_id=purchase_id, amount=p["amount"],
                        detail=f"{why}. Hold retained; no blind retry.")
+
+    def claim_key(self, purchase_id: str) -> str | None:
+        """The idempotency key sent to the rail as dapp_order_id: the original order reference."""
+        with self._lock:
+            row = self.conn.execute("SELECT idempotency_key FROM dispatch_claims WHERE purchase_id=?",
+                                    (purchase_id,)).fetchone()
+        return row["idempotency_key"] if row else None
+
+    def record_reconcile(self, purchase_id: str, detail: str, ref: str | None = None) -> None:
+        """Evidence for every recovery lookup, including the ones that change nothing."""
+        with self._tx():
+            p = self._purchase(purchase_id)
+            self._emit("RECONCILE_ATTEMPTED", "owner", purchase_id=purchase_id, amount=p["amount"], ref=ref,
+                       detail=detail)
+
+    def resolve_manually(self, purchase_id: str, *, outcome: str, reference: str, note: str = "") -> None:
+        """Operator path when the rail cannot be asked (MND-11).
+
+        The owner inspected the provider by hand and records what they found, with the provider's own
+        reference. PAID settles once against that reference. UNPAID releases the hold only as an explicit,
+        recorded attestation that no payment happened. Amount or balance alone is never accepted as proof.
+        """
+        reference = reference.strip()
+        if not reference:
+            raise LedgerError("a provider reference is required")
+        with self._tx():
+            p = self._purchase(purchase_id)
+            if p["stage"] not in (Stage.RECOVERY_UNKNOWN.value, Stage.DISPATCHED.value):
+                raise LedgerError("only an unresolved payment can be resolved by hand")
+            self._emit("OPERATOR_RESOLUTION", "owner", purchase_id=purchase_id, amount=p["amount"], ref=reference,
+                       detail=f"Owner inspected the provider: {outcome}. {note}".strip())
+        if outcome == "PAID":
+            self.settle(purchase_id, reference)
+        elif outcome == "UNPAID":
+            self.close_unpaid(purchase_id, f"owner attested no payment ({reference})")
+        else:
+            raise LedgerError("outcome must be PAID or UNPAID")
 
     def close_unpaid(self, purchase_id: str, why: str) -> None:
         """Rail proved no payment happened or can happen. Only then is the hold released."""

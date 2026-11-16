@@ -11,7 +11,7 @@ import json
 import os
 import secrets
 import time
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
@@ -180,6 +180,22 @@ def approve(purchase_id: str, body: ApproveBody) -> dict[str, Any]:
 def reject(purchase_id: str) -> dict[str, Any]:
     guard(ledger.release, purchase_id)
     return view(ledger.purchase(purchase_id))
+
+
+class ResolveBody(Strict):
+    outcome: Literal["PAID", "UNPAID"]
+    reference: str = Field(min_length=1, max_length=200)
+    note: str = Field(default="", max_length=500)
+
+
+@app.post("/api/v1/purchases/{purchase_id}/resolve", dependencies=[Depends(owner)])
+def resolve(purchase_id: str, body: ResolveBody) -> dict[str, Any]:
+    """Owner records what they found by inspecting the provider when the rail cannot be asked."""
+    guard(ledger.resolve_manually, purchase_id, outcome=body.outcome, reference=body.reference, note=body.note)
+    p = ledger.purchase(purchase_id)
+    if p["stage"] == "SETTLED":  # paid by the owner's account of it: delivery is still verified separately
+        p = orchestrator.deliver(ledger, seller, purchase_id)
+    return view(p)
 
 
 @app.post("/api/v1/purchases/{purchase_id}/reconcile", dependencies=[Depends(owner)])
