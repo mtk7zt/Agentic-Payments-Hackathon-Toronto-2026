@@ -39,7 +39,7 @@ export function stageBadge(p: Purchase): { tone: Tone; label: string } {
     case "RESERVED":
       return { tone: "intent", label: "Reserved" };
     case "DISPATCHED":
-      return { tone: "intent", label: "At Qatom" };
+      return { tone: "intent", label: "At rail" };
     case "PENDING_APPROVAL":
       return { tone: "warning", label: "Pending review" };
     case "SETTLED":

@@ -141,8 +141,10 @@ export interface State {
   purchases: Purchase[];
   events: Evt[];
   claims: Record<string, Claim>;
-  session: { key: string; n: number; state: "active" | "revoked" };
+  session: { key: string; n: number; state: "active" | "frozen" | "revoked" };
   counter: number;
+  /** Task allocation. Live mode takes it from the gateway; the simulation uses BUDGET. */
+  budget?: Milli;
 }
 
 export type TxResult = { ok: true } | { ok: false; error: string };

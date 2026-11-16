@@ -2,8 +2,10 @@
  * The cockpit's single data source.
  *
  * live       NEXT_PUBLIC_MANDATE_API_URL is set and the gateway answers. State
- *            comes from GET /api/v1/state and events from the SSE stream at
- *            /api/events; every action is an API call.
+ *            comes from GET /api/v1/state (polled every 3 s) and every action is
+ *            an owner API call.
+ * signin     The gateway answered 401/403: the owner token is missing or wrong.
+ *            The simulated ledger is shown until a token works.
  * simulated  No URL, or the gateway is unreachable. The in-browser ledger in
  *            lib/ledger.ts takes over, and the gateway is retried every 10 s.
  *
@@ -11,27 +13,62 @@
  * one is running.
  */
 import { useSyncExternalStore } from "react";
-import { API_URL, ApiError, api, subscribe } from "./api";
-import type { PurchaseDTO, StateDTO } from "./api";
+import { API_URL, ApiError, api, describe, kindOf } from "./api";
+import type { ErrorKind, KillSwitchDTO, PurchaseDTO, RailName, SessionKeyDTO, SessionState, StateDTO, WalletDTO } from "./api";
 import * as sim from "./ledger";
 import type { Clause, Evt, EvtType, LedgerEventDTO, Policy, Purchase, ScenarioKey, Stage, State, TxResult } from "./mandate.types";
 
 export { BUDGET, CLAUSE_TEXT, GENESIS, available, entriesFor, fmt, short, verifyChain } from "./ledger";
 export type * from "./mandate.types";
+export type { RailName, SessionKeyDTO, SessionState, WalletDTO } from "./api";
 
-export type Mode = "connecting" | "live" | "simulated";
+export type Mode = "connecting" | "live" | "signin" | "simulated";
+
+/** Gateway facts the simulated ledger has no equivalent for. */
+export interface LiveExtras {
+  mandateId: string;
+  rail: RailName;
+  keys: SessionKeyDTO[];
+  wallet: WalletDTO | null;
+  chain: StateDTO["chain"] | null;
+  /** The policy version the gateway last confirmed; sent as expected_version. */
+  serverVersion: number;
+  /** A freshly issued session token. The gateway shows it once. */
+  issued: { keyId: string; token: string } | null;
+}
+
+/** One status line for the cockpit's aria-live region. */
+export interface Notice {
+  kind: ErrorKind | "ok";
+  text: string;
+  at: number;
+}
+
+const POLL_MS = 3000;
+const RETRY_MS = 10_000;
 
 let mode: Mode = API_URL ? "connecting" : "simulated";
 let live: State | null = null;
+let extras: LiveExtras | null = null;
+let notice: Notice | null = null;
 let events: Evt[] = [];
 let token: string | null = null;
-let stopStream: (() => void) | null = null;
+let poller: ReturnType<typeof setInterval> | null = null;
 let retry: ReturnType<typeof setTimeout> | null = null;
 let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 let started = false;
 const addressBook: Record<string, string> = {};
 const listeners = new Set<() => void>();
 const emit = () => listeners.forEach((l) => l());
+
+function say(kind: Notice["kind"], text: string) {
+  notice = { kind, text, at: Date.now() };
+  emit();
+}
+export function clearNotice() {
+  notice = null;
+  emit();
+}
 
 // ───────── mapping: gateway wire shapes → cockpit shapes ─────────
 
@@ -105,19 +142,72 @@ function mapState(st: StateDTO): State {
     purchases: st.purchases.map((p) => mapPurchase(p, unspent)),
     events,
     claims,
-    session: { key: lastKey?.key_id ?? "no key issued", n: keys.length, state: lastKey && lastKey.state === "active" && !policy.paused ? "active" : lastKey ? "revoked" : "active" },
+    session: { key: lastKey?.key_id ?? "no key issued", n: keys.length, state: lastKey ? lastKey.state : "active" },
     counter: st.purchases.length,
+    budget: st.balances.budget,
   };
 }
 
 // ───────── connection ─────────
+// TODO(MND-17): the SSE stream (/api/events) is owner-only and EventSource cannot
+// send X-Owner-Token. Until owner auth for the stream lands, poll /api/v1/state.
 
-async function refresh() {
+function apply(st: StateDTO, wallet: WalletDTO | null) {
+  live = mapState(st);
+  extras = {
+    mandateId: st.mandate_id,
+    rail: st.rail,
+    keys: st.session_keys ?? [],
+    wallet,
+    chain: st.chain,
+    serverVersion: st.policy.version,
+    issued: extras?.issued ?? null,
+  };
+  // A policy edit still waiting to be sent stays visible over the polled copy.
+  if (Object.keys(pendingPolicy).length) live = { ...live, policy: { ...live.policy, ...pendingPolicy } };
+}
+
+// Sequential on purpose: the gateway's ledger can fail two overlapping reads (see the PR notes).
+async function fetchAll(timeoutMs?: number) {
+  const st = await api.state(timeoutMs);
+  const wallet = await api.wallet().catch(() => extras?.wallet ?? null);
+  apply(st, wallet);
+}
+
+let misses = 0;
+
+let inFlight: Promise<void> | null = null;
+let again = false;
+/** One read at a time; a request made meanwhile runs once the current one ends. */
+function refresh(): Promise<void> {
+  if (inFlight) {
+    again = true;
+    return inFlight;
+  }
+  inFlight = refreshOnce().finally(() => {
+    inFlight = null;
+    if (again) {
+      again = false;
+      void refresh();
+    }
+  });
+  return inFlight;
+}
+
+async function refreshOnce() {
   try {
-    live = mapState(await api.state());
+    await fetchAll();
+    misses = 0;
+    if (mode !== "live") {
+      mode = "live";
+      say("ok", "Connected to the gateway.");
+    }
     emit();
-  } catch {
-    goSimulated();
+  } catch (err) {
+    // One failed poll is not an outage; an auth refusal is acted on at once.
+    if (mode === "live" && kindOf(err) !== "auth" && ++misses < 2) return;
+    misses = 0;
+    fallBack(err);
   }
 }
 
@@ -126,33 +216,32 @@ function scheduleRefresh() {
   refreshTimer = setTimeout(refresh, 60);
 }
 
-function goSimulated() {
-  stopStream?.();
-  stopStream = null;
-  mode = "simulated";
-  emit();
-  if (API_URL && !retry) retry = setTimeout(() => { retry = null; connect(); }, 10_000);
+function stopPolling() {
+  if (poller) clearInterval(poller);
+  poller = null;
+}
+
+function fallBack(err: unknown) {
+  stopPolling();
+  const next: Mode = kindOf(err) === "auth" ? "signin" : "simulated";
+  const changed = next !== mode;
+  mode = next;
+  if (changed) say(kindOf(err) === "auth" ? "auth" : "offline", describe(err));
+  else emit();
+  if (API_URL && !retry) retry = setTimeout(() => { retry = null; connect(); }, RETRY_MS);
 }
 
 async function connect() {
   try {
-    const st = await api.state(1500);
-    events = [];
-    live = mapState(st);
+    await fetchAll(1500);
+    const was = mode;
     mode = "live";
-    emit();
-    stopStream = subscribe(
-      (e) => {
-        if (events.some((x) => x.seq === e.seq)) return; // replayed after a reconnect
-        events = [...events, mapEvent(e)].sort((a, b) => a.seq - b.seq);
-        scheduleRefresh();
-      },
-      (status) => {
-        if (status === "stale") refresh(); // refresh() drops to simulated if the gateway is gone
-      },
-    );
-  } catch {
-    goSimulated();
+    if (was !== "connecting") say("ok", "Connected to the gateway.");
+    else emit();
+    stopPolling();
+    poller = setInterval(refresh, POLL_MS);
+  } catch (err) {
+    fallBack(err);
   }
 }
 
@@ -160,6 +249,12 @@ function start() {
   if (started || typeof window === "undefined") return;
   started = true;
   if (API_URL) connect();
+}
+
+/** "Rules changed, reload": drop local edits and take the gateway's current copy. */
+export function reloadState(): Promise<void> {
+  pendingPolicy = {};
+  return refresh();
 }
 
 // ───────── hooks ─────────
@@ -177,20 +272,30 @@ const snapshot = (): State => (mode === "live" && live ? live : sim.getState());
 
 export const useMandate = (): State => useSyncExternalStore(subscribeAll, snapshot, snapshot);
 export const useMode = (): Mode => useSyncExternalStore(subscribeAll, () => mode, () => mode);
+/** Gateway-only facts (rail, session keys, wallet). Null while simulated. */
+export const useLive = (): LiveExtras | null =>
+  useSyncExternalStore(subscribeAll, () => (mode === "live" ? extras : null), () => null);
+export const useNotice = (): Notice | null => useSyncExternalStore(subscribeAll, () => notice, () => null);
 export const isLive = () => mode === "live";
 /** Vendors the policy panel offers as toggles. */
 export const knownVendors = (s: State): string[] =>
   Array.from(new Set([...(isLive() ? Object.keys(addressBook) : ["seller-a", "seller-b"]), ...s.policy.vendors]));
+/** Payment address on file for a seller (live mode only). */
+export const vendorAddress = (v: string): string | undefined => addressBook[v];
 
 // ───────── actions (same names and meaning in both modes) ─────────
 
 const ok: TxResult = { ok: true };
-async function guard(fn: () => Promise<unknown>): Promise<TxResult> {
+async function guard(fn: () => Promise<unknown>, success?: string): Promise<TxResult> {
   try {
     await fn();
+    if (success) say("ok", success);
     return ok;
   } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : String(err) };
+    const text = describe(err);
+    say(kindOf(err), text);
+    if (kindOf(err) === "offline") scheduleRefresh(); // refresh() decides whether the gateway is really gone
+    return { ok: false, error: text };
   } finally {
     scheduleRefresh();
   }
@@ -238,54 +343,144 @@ export function run(k: ScenarioKey): Promise<TxResult> {
 }
 
 export function approveAndRun(id: string): Promise<TxResult> {
-  return isLive() ? guard(() => api.approve(id)) : Promise.resolve(sim.approveAndRun(id));
+  return isLive() ? guard(() => api.approve(id), "Purchase approved and sent to the rail.") : Promise.resolve(sim.approveAndRun(id));
 }
 
 export function release(id: string, why: "REJECTED" | "EXPIRED"): Promise<TxResult> {
   if (!isLive()) return Promise.resolve(sim.release(id, why));
   // The gateway refuses a late approval itself; only an explicit rejection is sent.
-  return why === "REJECTED" ? guard(() => api.reject(id)) : Promise.resolve(ok);
+  return why === "REJECTED" ? guard(() => api.reject(id), "Purchase declined. The hold is released.") : Promise.resolve(ok);
 }
 
-export function reconcile(id: string): Promise<TxResult> {
+export function reconcile(id: string, railOrderId?: string): Promise<TxResult> {
   if (!isLive()) {
     sim.reconcile(id);
     return Promise.resolve(ok);
   }
-  return guard(() => api.reconcile(id));
+  return guard(() => api.reconcile(id, railOrderId), "Reconciled with the rail.");
+}
+
+/** Ledger events for one purchase. Live mode fetches the evidence bundle from the gateway. */
+export async function loadEvidence(id: string): Promise<Evt[] | null> {
+  if (!isLive()) return null;
+  try {
+    const ev = await api.evidence(id);
+    mergeEvents(ev.events);
+    return ev.events.map(mapEvent);
+  } catch (err) {
+    say(kindOf(err), describe(err));
+    return null;
+  }
+}
+
+function mergeEvents(list: LedgerEventDTO[]) {
+  const seen = new Set(events.map((e) => e.seq));
+  const fresh = list.filter((e) => !seen.has(e.seq)).map(mapEvent);
+  if (!fresh.length) return;
+  events = [...events, ...fresh].sort((a, b) => a.seq - b.seq);
+  if (live) live = { ...live, events };
+  emit();
 }
 
 let pendingPolicy: Partial<Omit<Policy, "version" | "paused">> = {};
 let policyTimer: ReturnType<typeof setTimeout> | null = null;
 
 export function setPolicy(patch: Partial<Omit<Policy, "version" | "paused">>): Promise<TxResult> {
-  if (!isLive() || !live) return Promise.resolve(sim.setPolicy(patch));
+  if (!isLive() || !live || !extras) return Promise.resolve(sim.setPolicy(patch));
   // Show the change at once, then send one PATCH after the control settles (a slider fires many times).
   live = { ...live, policy: { ...live.policy, ...patch } };
   emit();
   pendingPolicy = { ...pendingPolicy, ...patch };
   if (policyTimer) clearTimeout(policyTimer);
-  policyTimer = setTimeout(() => {
-    const p = pendingPolicy;
-    pendingPolicy = {};
-    const body: Record<string, unknown> = {};
-    if (p.autoApprove !== undefined) body.max_single_spend = sim.fmt(p.autoApprove);
-    if (p.strict !== undefined) body.strict_whitelist = p.strict;
-    if (p.maxRetries !== undefined) body.max_attempts = p.maxRetries;
-    if (p.vendors !== undefined)
-      body.whitelisted_sellers = Object.fromEntries(p.vendors.map((v) => [v, addressBook[v] ?? "0x0000000000000000000000000000000000000000"]));
-    void guard(() => api.patchPolicy(body));
-  }, 250);
-  return Promise.resolve(ok);
+  return new Promise((resolve) => {
+    policyTimer = setTimeout(() => {
+      const p = pendingPolicy;
+      pendingPolicy = {};
+      const body: Parameters<typeof api.patchPolicy>[0] = { expected_version: extras!.serverVersion };
+      if (p.autoApprove !== undefined) body.max_single_spend = sim.fmt(p.autoApprove);
+      if (p.strict !== undefined) body.strict_whitelist = p.strict;
+      if (p.maxRetries !== undefined) body.max_attempts = p.maxRetries;
+      if (p.vendors !== undefined) {
+        const missing = p.vendors.filter((v) => !addressBook[v]);
+        if (missing.length) {
+          say("invalid", `Add a payment address for ${missing.join(", ")} before trusting it.`);
+          scheduleRefresh();
+          return resolve({ ok: false, error: "missing address" });
+        }
+        body.whitelisted_sellers = Object.fromEntries(p.vendors.map((v) => [v, addressBook[v]]));
+      }
+      guard(async () => {
+        const pol = await api.patchPolicy(body);
+        if (extras) extras = { ...extras, serverVersion: pol.version };
+      }, "Rules saved.").then(resolve);
+    }, 250);
+  });
+}
+
+/** Trust a new seller. The gateway pays only the address on file for a domain. */
+export function addVendor(domain: string, address: string): Promise<TxResult> {
+  const d = domain.trim().toLowerCase();
+  if (!isLive() || !live) return Promise.resolve(sim.setPolicy({ vendors: [...sim.getState().policy.vendors, d] }));
+  addressBook[d] = address.trim().toLowerCase();
+  return setPolicy({ vendors: Array.from(new Set([...live.policy.vendors, d])) });
 }
 
 export function setPaused(paused: boolean): Promise<TxResult> {
   if (!isLive()) return Promise.resolve(sim.setPaused(paused));
   if (paused) token = null; // the gateway revokes every active key
-  return guard(() => api.killSwitch(paused));
+  return guard(async () => {
+    const r: KillSwitchDTO = await api.killSwitch(paused);
+    if (r.slip?.length) mergeEvents(r.slip);
+    if (r.notice) say("ok", r.notice);
+  }, paused ? undefined : "Kill-switch released. Issue a new session key to resume.");
+}
+
+// session keys (live only)
+
+export function issueSessionKey(): Promise<TxResult> {
+  return guard(async () => {
+    const r = await api.issueKey();
+    if (extras) extras = { ...extras, issued: { keyId: r.key_id, token: r.token } };
+    emit();
+  }, "Session key issued. Copy the token now; it is shown once.");
+}
+
+export function dismissIssuedToken() {
+  if (extras) extras = { ...extras, issued: null };
+  emit();
+}
+
+export function setSessionState(keyId: string, state: SessionState): Promise<TxResult> {
+  const words: Record<SessionState, string> = { active: "resumed", frozen: "frozen", revoked: "revoked" };
+  return guard(() => api.setKeyState(keyId, state), `Session key ${keyId} ${words[state]}.`);
+}
+
+// wallet (live only; owner-recorded snapshots)
+
+export type WalletAction = "configure" | "observe" | "reconcile";
+export function recordWallet(action: WalletAction, balanceMilli: number, reference: string): Promise<TxResult> {
+  const fn = { configure: api.configureWallet, observe: api.observeWallet, reconcile: api.reconcileWallet }[action];
+  const words = { configure: "Wallet baseline recorded.", observe: "Wallet observation recorded.", reconcile: "Wallet reconciled." }[action];
+  return guard(async () => {
+    const w = await fn(balanceMilli, reference);
+    if (extras) extras = { ...extras, wallet: w };
+  }, words);
 }
 
 /** Only the simulated ledger can be reset from the cockpit. */
 export function reset() {
   if (!isLive()) sim.reset();
+}
+
+/** Live mode re-hashes the whole chain on the gateway; the browser only holds part of it. */
+export async function verifyOnGateway(): Promise<import("./mandate.types").Verification> {
+  try {
+    const c = await api.verify();
+    return c.intact
+      ? { status: "intact", count: c.events, head: c.head ?? "", engine: "gateway" }
+      : { status: "broken", at: c.first_bad_seq ?? 0, count: c.events };
+  } catch (err) {
+    say(kindOf(err), describe(err));
+    return { status: "idle" };
+  }
 }

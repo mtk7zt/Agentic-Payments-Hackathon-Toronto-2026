@@ -34,7 +34,7 @@ export function CockpitHeader({ s, mode, onKill }: { s: State; mode: Mode; onKil
             <span className="well flex h-7 w-7 items-center justify-center rounded-[4px] font-mono text-[10.5px] text-emerald-300">AC</span>
             <span>
               <span className="block text-[13px] font-medium leading-tight">Acme Corp · Procurement Agent #04</span>
-              <span className="block font-mono text-[10px] leading-tight text-slate-500">mnd_acme_04 · sample data</span>
+              <span className="block font-mono text-[10px] leading-tight text-slate-500">mnd_acme_04 · {mode === "live" ? "live gateway" : "sample data"}</span>
             </span>
             <ChevronsUpDown aria-hidden="true" className="h-3.5 w-3.5 text-slate-500" />
           </button>
@@ -53,7 +53,7 @@ export function CockpitHeader({ s, mode, onKill }: { s: State; mode: Mode; onKil
         </div>
 
         <div className={`well lockable order-last flex w-full divide-x divide-white/[0.08] overflow-x-auto rounded-md lg:order-none lg:w-auto ${locked ? "border-amber-700/50" : ""}`}>
-          <Stat label="Allocation" v={BUDGET} />
+          <Stat label="Allocation" v={s.budget ?? BUDGET} />
           <Stat label="Spent" v={s.settled} tone="text-emerald-300" />
           <Stat label="Held" v={s.held} tone="text-amber-300" />
           <Stat label="Available" v={available(s)} />
@@ -65,14 +65,14 @@ export function CockpitHeader({ s, mode, onKill }: { s: State; mode: Mode; onKil
             <p className="font-mono text-[9.5px] uppercase tracking-[0.14em] text-slate-500">Source</p>
             <p className={`flex items-center gap-2 font-mono text-[12px] leading-[20px] ${mode === "live" ? "text-emerald-300" : "text-slate-400"}`}>
               <span aria-hidden="true" className={`led ${mode === "live" ? "bg-emerald-400" : mode === "connecting" ? "bg-amber-400" : "bg-slate-500"}`} />
-              {mode === "live" ? "gateway · SSE" : mode === "connecting" ? "connecting" : API_URL ? "gateway offline · simulated" : "simulated"}
+              {mode === "live" ? "gateway · polling 3 s" : mode === "connecting" ? "connecting" : mode === "signin" ? "sign in needed · simulated" : API_URL ? "gateway offline · simulated" : "simulated"}
             </p>
           </div>
         </div>
 
         <div className="ml-auto flex items-center gap-3">
           <span className={`well hidden items-center gap-2 rounded-[4px] px-2.5 py-2 font-mono text-[11px] md:inline-flex ${locked ? "border-rose-500/50 text-rose-300" : "text-slate-300"}`}>
-            <span aria-hidden="true" className={`led ${locked ? "bg-rose-500" : "bg-emerald-400"}`} />
+            <span aria-hidden="true" className={`led ${locked || s.session.state === "revoked" ? "bg-rose-500" : s.session.state === "frozen" ? "bg-amber-400" : "bg-emerald-400"}`} />
             {s.session.key} · {s.session.state}
           </span>
           <button
