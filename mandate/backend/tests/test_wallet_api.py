@@ -11,7 +11,7 @@ def test_wallet_owner_api_validates_money_and_reports_provenance(monkeypatch):
     client = TestClient(main.app)
     headers = {'X-Owner-Token': 'owner-secret'}
     body = {'balance_milli': 100, 'reference': 'owner: explorer snapshot'}
-    assert client.post('/api/v1/wallet/configure', json=body).status_code == 403
+    assert client.post("/api/v1/wallet/configure", json=body).status_code == 401
     assert client.get('/api/v1/wallet', headers=headers).json()['configured'] is False
     for bad in [True, 100.0, '100', -1, 2**53]:
         assert client.post('/api/v1/wallet/configure', headers=headers,

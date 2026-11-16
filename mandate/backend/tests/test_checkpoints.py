@@ -138,7 +138,7 @@ def test_owner_checkpoint_endpoints_and_export(ledger, monkeypatch):
     monkeypatch.setattr(gateway, "ledger", ledger)
     headers = {"X-Owner-Token": secret}
     with TestClient(gateway.app) as client:
-        assert client.post("/api/v1/evidence/checkpoints").status_code == 403
+        assert client.post("/api/v1/evidence/checkpoints").status_code == 401
         response = client.post("/api/v1/evidence/checkpoints", headers=headers)
         assert response.status_code == 200
         checkpoint = response.json()

@@ -208,7 +208,7 @@ def test_owner_resume_api_requires_reconciled_state_and_pause_notice(api):
     ledger.claim_dispatch(pid)
     paused = client.post("/api/v1/kill-switch", json={"engaged": True}, headers=headers)
     assert paused.status_code == 200 and "may still complete" in paused.json()["notice"]
-    assert client.post("/api/v1/kill-switch", json={"engaged": False}).status_code == 403
+    assert client.post("/api/v1/kill-switch", json={"engaged": False}).status_code == 401
     assert client.post("/api/v1/kill-switch", json={"engaged": False}, headers=headers).status_code == 409
     ledger.close_unpaid(pid, "operator proof: no payment was sent")
     assert client.post("/api/v1/kill-switch", json={"engaged": False}, headers=headers).json() == {"engaged": False}

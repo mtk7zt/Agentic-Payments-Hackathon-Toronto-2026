@@ -287,6 +287,19 @@ class Ledger:
         with self._lock:
             return [dict(r) for r in self.conn.execute("SELECT * FROM events WHERE seq>? ORDER BY seq", (after_seq,))]
 
+    def events_page(self, *, after_seq: int = 0, limit: int = 100, purchase_id: str | None = None,
+                    event_type: str | None = None, stage: str | None = None) -> list[dict[str, Any]]:
+        """Ordered page of events. `stage` filters by the purchase's current stage."""
+        sql, args = "SELECT e.* FROM events e LEFT JOIN purchases p ON p.id=e.purchase_id WHERE e.seq>?", [after_seq]
+        if purchase_id:
+            sql, args = sql + " AND e.purchase_id=?", [*args, purchase_id]
+        if event_type:
+            sql, args = sql + " AND e.type=?", [*args, event_type]
+        if stage:
+            sql, args = sql + " AND p.stage=?", [*args, stage]
+        with self._lock:
+            return [dict(r) for r in self.conn.execute(sql + " ORDER BY e.seq LIMIT ?", [*args, limit])]
+
     def latest_checkpoint(self) -> dict[str, Any] | None:
         with self._lock:
             row = self.conn.execute(
@@ -369,8 +382,10 @@ class Ledger:
                     raise LedgerError("policy version mismatch; refresh state before editing")
             new = replace(cur, **changes, version=cur.version + 1)
             m = self._mandate()
-            if new.task_budget_cap < m["held"] + m["settled"]:
-                raise LedgerError("budget cannot drop below held + settled")
+            committed = m["held"] + m["settled"]
+            if new.task_budget_cap < committed:
+                raise LedgerError(f"budget {new.task_budget_cap} is below the {committed} already held or spent "
+                                  f"({m['held']} held + {m['settled']} settled, in thousandths)")
             self.conn.execute("UPDATE mandate SET policy_json=? WHERE id=?", (new.canonical(), self.mandate_id))
             self._emit("POLICY_SNAPSHOT", "owner", detail=f"Policy v{new.version} snapshot")
             return new
@@ -571,9 +586,17 @@ class Ledger:
                 return dict(prior), False
             n = self.conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0] + 1
             pid = f"pur_{n:04d}"
+            # Earlier purchases of this item from this seller inside the policy's rolling window that hold
+            # or spent money count as attempts, so a runaway loop hits max_attempts (MND-22) while a
+            # weekly household order does not. Stuck recoveries always count, whatever their age.
+            # Blocked, rejected and definitively unpaid purchases moved no money and never count.
+            window_start = time.time() - self.policy().repeat_window_s
+            live = (*HOLDING, *PAID)
             attempt = 1 + self.conn.execute(
-                "SELECT COUNT(*) FROM purchases WHERE item=? AND stage IN (?,?)",
-                (intent.item, Stage.RECOVERY_UNKNOWN.value, Stage.RECOVERY_UNDELIVERED.value)).fetchone()[0]
+                f"SELECT COUNT(*) FROM purchases WHERE mandate_id=? AND item=? AND seller_domain=? "
+                f"AND stage IN ({','.join('?' * len(live))}) AND (created_at>=? OR stage IN (?,?))",
+                (self.mandate_id, intent.item, envelope["seller_domain"], *[c.value for c in live], window_start,
+                 Stage.RECOVERY_UNKNOWN.value, Stage.RECOVERY_UNDELIVERED.value)).fetchone()[0]
             now = time.time()
             self.conn.execute(
                 "INSERT INTO purchases(id,mandate_id,request_key,fingerprint,seller_domain,seller_address,item,amount,"
@@ -713,6 +736,11 @@ class Ledger:
                 return False
             if claim["state"] == "UNPAID":
                 raise LedgerError("claim was closed as unpaid")
+            other = self.conn.execute(
+                "SELECT id FROM purchases WHERE id<>? AND (rail_order_id=? OR rail_tx_id=?) AND stage IN (?,?,?)",
+                (purchase_id, rail_order_id, rail_order_id, *[s.value for s in PAID])).fetchone()
+            if other:  # one rail payment can only ever pay for one purchase
+                raise LedgerError(f"rail order {rail_order_id} already settled purchase {other['id']}")
             self.conn.execute("UPDATE mandate SET held=held-?, settled=settled+? WHERE id=?",
                               (p["amount"], p["amount"], self.mandate_id))
             self.conn.execute("UPDATE dispatch_claims SET state='SETTLED' WHERE purchase_id=?", (purchase_id,))
@@ -740,6 +768,43 @@ class Ledger:
             self._stage(purchase_id, Stage.RECOVERY_UNKNOWN)
             self._emit("OUTCOME_UNKNOWN", "executor", purchase_id=purchase_id, amount=p["amount"],
                        detail=f"{why}. Hold retained; no blind retry.")
+
+    def claim_key(self, purchase_id: str) -> str | None:
+        """The idempotency key sent to the rail as dapp_order_id: the original order reference."""
+        with self._lock:
+            row = self.conn.execute("SELECT idempotency_key FROM dispatch_claims WHERE purchase_id=?",
+                                    (purchase_id,)).fetchone()
+        return row["idempotency_key"] if row else None
+
+    def record_reconcile(self, purchase_id: str, detail: str, ref: str | None = None) -> None:
+        """Evidence for every recovery lookup, including the ones that change nothing."""
+        with self._tx():
+            p = self._purchase(purchase_id)
+            self._emit("RECONCILE_ATTEMPTED", "owner", purchase_id=purchase_id, amount=p["amount"], ref=ref,
+                       detail=detail)
+
+    def resolve_manually(self, purchase_id: str, *, outcome: str, reference: str, note: str = "") -> None:
+        """Operator path when the rail cannot be asked (MND-11).
+
+        The owner inspected the provider by hand and records what they found, with the provider's own
+        reference. PAID settles once against that reference. UNPAID releases the hold only as an explicit,
+        recorded attestation that no payment happened. Amount or balance alone is never accepted as proof.
+        """
+        reference = reference.strip()
+        if not reference:
+            raise LedgerError("a provider reference is required")
+        with self._tx():
+            p = self._purchase(purchase_id)
+            if p["stage"] not in (Stage.RECOVERY_UNKNOWN.value, Stage.DISPATCHED.value):
+                raise LedgerError("only an unresolved payment can be resolved by hand")
+            self._emit("OPERATOR_RESOLUTION", "owner", purchase_id=purchase_id, amount=p["amount"], ref=reference,
+                       detail=f"Owner inspected the provider: {outcome}. {note}".strip())
+        if outcome == "PAID":
+            self.settle(purchase_id, reference)
+        elif outcome == "UNPAID":
+            self.close_unpaid(purchase_id, f"owner attested no payment ({reference})")
+        else:
+            raise LedgerError("outcome must be PAID or UNPAID")
 
     def close_unpaid(self, purchase_id: str, why: str) -> None:
         """Rail proved no payment happened or can happen. Only then is the hold released."""

@@ -86,6 +86,14 @@ recovery; it never authorizes blind resubmission. Timeouts retain the hold. Miss
 lookup identity requires operator investigation. An amount or wallet balance
 alone does not establish which payment occurred.
 
+Recovery order (`POST /purchases/{id}/reconcile`): the stored rail order id, then a
+lookup by the original `dapp_order_id` where the rail supports one, then an order id
+the owner supplies. If the rail reports a different `dapp_order_id` for that order,
+the hold stays. One rail payment can settle only one purchase. When the rail cannot
+be asked at all, the owner inspects the provider and records the result with its
+reference (`POST /purchases/{id}/resolve`, PAID or UNPAID). Every attempt, including
+ones that change nothing, is written to the evidence chain.
+
 Pause prevents new claims after acknowledgment. It cannot cancel a claim/payment
 already in flight, reverse a payment or stop its accounting. Settlement and
 reconciliation of existing exposure remain allowed while paused. Resume requires

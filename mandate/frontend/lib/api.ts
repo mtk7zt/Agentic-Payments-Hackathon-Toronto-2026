@@ -21,8 +21,10 @@
  *   POST  /api/v1/purchases/{id}/approve             owner     { digest } -> PurchaseDTO
  *   POST  /api/v1/purchases/{id}/reject              owner     PurchaseDTO
  *   POST  /api/v1/purchases/{id}/reconcile           owner     PurchaseDTO (?rail_order_id=)
+ *   POST  /api/v1/purchases/{id}/resolve             owner     { outcome: PAID|UNPAID, reference, note } -> PurchaseDTO
  *   GET   /api/v1/purchases/{id}/evidence            owner     EvidenceDTO
  *   GET   /api/v1/evidence/verify                    owner     ChainDTO
+ *   GET   /api/v1/events?after&limit&purchase_id&type&stage owner  { events, next }
  *   PATCH /api/v1/policy                             owner     PolicyDTO (expected_version; 409 if stale)
  *   POST  /api/v1/kill-switch                        owner     KillSwitchDTO
  *   GET   /api/v1/session-keys                       owner     SessionKeyDTO[]
@@ -165,9 +167,14 @@ export interface KillSwitchDTO {
 
 export interface PolicyPatch {
   expected_version: number;
+  /** Exact decimal strings, e.g. "5.000". The budget cannot go below money already held or spent. */
+  task_budget_cap?: string;
+  transaction_ceiling?: string;
   max_single_spend?: string;
   strict_whitelist?: boolean;
   max_attempts?: number;
+  /** Seconds; repeat purchases of one item inside this window count toward max_attempts. */
+  repeat_window_s?: number;
   whitelisted_sellers?: Record<string, string>;
 }
 
@@ -204,7 +211,10 @@ export function describe(err: unknown): string {
     case "offline":
       return "Gateway unreachable. Showing the simulated ledger.";
     case "auth":
-      return "Sign in needed. The gateway refused the owner token.";
+      // 401: no credential was sent. 403: a credential was sent and refused.
+      return err instanceof ApiError && err.status === 403
+        ? "The gateway refused this owner token. Sign in again."
+        : "Sign in needed.";
     case "conflict":
       return `Rules changed, reload. ${detail}`;
     case "notfound":
@@ -267,6 +277,13 @@ export const api = {
   // purchases
   propose: (body: PurchaseRequestDTO, token: string) =>
     call<PurchaseDTO>("/api/v1/purchases", { ...post(body, { "X-Session-Key": token }), owner: false }),
+  /** Owner path when the rail cannot be asked: record what the provider shows, with its reference. */
+  resolve: (id: string, outcome: "PAID" | "UNPAID", reference: string, note = "") =>
+    call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/resolve`, post({ outcome, reference, note })),
+  /** Full evidence log in order; `after` is the event seq the SSE stream also uses. */
+  events: (q: { after?: number; limit?: number; purchase_id?: string; type?: string; stage?: string } = {}) =>
+    call<{ events: LedgerEventDTO[]; next: number | null }>(
+      `/api/v1/events?${new URLSearchParams(Object.entries(q).filter(([, v]) => v !== undefined).map(([k, v]) => [k, String(v)]))}`),
   approval: (id: string) => call<ApprovalSummaryDTO>(`/api/v1/purchases/${enc(id)}/approval`),
   /** Approves exactly the terms in `approval(id)`. A changed purchase or policy makes the digest stale (409). */
   approve: (id: string, digest: string) => call<PurchaseDTO>(`/api/v1/purchases/${enc(id)}/approve`, post({ digest })),
