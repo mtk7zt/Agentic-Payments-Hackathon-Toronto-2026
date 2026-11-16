@@ -28,6 +28,7 @@ frontend/                  Next.js 14 (App Router) + Tailwind
   lib/api.ts               typed gateway client and the /api/events SSE subscription
   lib/ledger.ts            simulated in-browser ledger used as the fallback
 scripts/smoke.py           CLI smoke test (MND-27)
+scripts/attacks.py         controlled attack scenarios (MND-22)
 docs/SPRINTS.md            sprint blueprint: criteria, contract and verify command per ticket
 docs/MANDATE_SYSTEM_GUIDE.md  plain-language guide for judges (PDF exports alongside)
 ```
@@ -41,6 +42,7 @@ pip install -r backend/requirements.txt
 python -m pytest                      # backend regression suite
 python scripts/smoke.py               # one mock checkout, prints the stored receipt
 python scripts/smoke.py --scenarios   # five mock cases; deliberate UNKNOWN exits 1
+python -m scripts.attacks              # injected seller, address swap, over-limit, runaway loop, cheap drain
 uvicorn backend.api.main:app --reload # http://localhost:8000/docs
 
 # frontend

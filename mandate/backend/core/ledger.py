@@ -586,9 +586,14 @@ class Ledger:
                 return dict(prior), False
             n = self.conn.execute("SELECT COUNT(*) FROM purchases").fetchone()[0] + 1
             pid = f"pur_{n:04d}"
+            # Every earlier purchase of this item from this seller that holds or spent money counts as an
+            # attempt, so a runaway loop re-buying the same thing hits max_attempts (MND-22). Blocked,
+            # rejected and definitively unpaid purchases moved no money and do not count.
+            counted = (*HOLDING, *PAID)
             attempt = 1 + self.conn.execute(
-                "SELECT COUNT(*) FROM purchases WHERE item=? AND stage IN (?,?)",
-                (intent.item, Stage.RECOVERY_UNKNOWN.value, Stage.RECOVERY_UNDELIVERED.value)).fetchone()[0]
+                f"SELECT COUNT(*) FROM purchases WHERE mandate_id=? AND item=? AND seller_domain=? "
+                f"AND stage IN ({','.join('?' * len(counted))})",
+                (self.mandate_id, intent.item, envelope["seller_domain"], *[c.value for c in counted])).fetchone()[0]
             now = time.time()
             self.conn.execute(
                 "INSERT INTO purchases(id,mandate_id,request_key,fingerprint,seller_domain,seller_address,item,amount,"
