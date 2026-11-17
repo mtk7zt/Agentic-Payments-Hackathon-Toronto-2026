@@ -38,3 +38,23 @@ def test_timeout_keeps_the_hold_and_resume_finishes_it(capsys):
 def test_amount_above_the_live_limit_is_refused_before_anything_happens(capsys):
     assert qatom_live.main(["--catalog-id", "26", "--amount", "0.101"]) == 2
     assert "above the 0.100" in capsys.readouterr().err
+
+
+def test_item_inputs_reach_qatom_and_a_refusal_records_why(capsys):
+    ledger = Ledger(":memory:", mandate_id="mnd_live_qatom")
+    r = rail(ledger, [(BOUGHT, False)])
+    p = qatom_live.run(ledger, r, catalog_id=26, amount_milli=1, arguments={"package": "react"},
+                       poll_s=0, sleep=lambda s: None)
+    assert p["stage"] == "SETTLED"
+    assert r.rail.mcp.calls[0][1] == {"catalog_item_id": 26, "arguments": {"package": "react"}}
+
+    ledger = Ledger(":memory:", mandate_id="mnd_live_qatom")
+    r = rail(ledger, [("Missing required input: package.", True)])
+    p = qatom_live.run(ledger, r, catalog_id=26, amount_milli=1, poll_s=0, sleep=lambda s: None)
+    assert p["stage"] == "EXPIRED" and ledger.balances()["held"] == 0
+    assert "Missing required input: package." in str(ledger.events())
+
+
+def test_bad_arg_is_refused_before_anything_happens(capsys):
+    assert qatom_live.main(["--catalog-id", "26", "--amount", "0.001", "--arg", "package"]) == 2
+    assert "NAME=VALUE" in capsys.readouterr().err

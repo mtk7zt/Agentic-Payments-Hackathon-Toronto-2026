@@ -59,7 +59,7 @@ class _Recording:
 
 
 def run(ledger: Ledger, rail: Any, *, catalog_id: int, amount_milli: int, resume: str | None = None,
-        wait_s: float = 300, poll_s: float = 5, sleep=time.sleep, clock=time.monotonic) -> dict[str, Any]:
+        arguments: dict[str, str] | None = None, wait_s: float = 300, poll_s: float = 5, sleep=time.sleep, clock=time.monotonic) -> dict[str, Any]:
     item = f"qatom-{catalog_id}"
     address = f"catalog:{catalog_id}"
     if resume:
@@ -72,7 +72,8 @@ def run(ledger: Ledger, rail: Any, *, catalog_id: int, amount_milli: int, resume
                               max_single_spend=max(pol.max_single_spend, amount_milli))
         p = orchestrator.submit(ledger, rail, None, request_key=f"qatom-live-{catalog_id}-{int(time.time())}",
                                 intent=Intent(SELLER_DOMAIN, address, item, amount_milli),
-                                tool_call={"tool": "qatom_checkout", "catalog_item_id": catalog_id})
+                                tool_call={"tool": "qatom_checkout", "catalog_item_id": catalog_id,
+                                           **({"arguments": arguments} if arguments else {})})
         pid = p["id"]
     deadline = clock() + wait_s
     p = ledger.purchase(pid)
@@ -82,14 +83,31 @@ def run(ledger: Ledger, rail: Any, *, catalog_id: int, amount_milli: int, resume
     return p
 
 
+def _parse_args(pairs: list[str]) -> dict[str, str]:
+    out: dict[str, str] = {}
+    for pair in pairs:
+        name, sep, value = pair.partition("=")
+        if not sep or not name.strip():
+            raise ValueError(f"--arg needs NAME=VALUE, got {pair!r}")
+        out[name.strip()] = value
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="One real Qatom purchase through Mandate, approved by you.")
     ap.add_argument("--catalog-id", type=int, required=True, help="Qatom catalog item id, for example 26")
     ap.add_argument("--amount", required=True, help='the most you allow, as a decimal string, for example "0.001"')
     ap.add_argument("--resume", help="continue an earlier purchase id instead of starting a new one")
+    ap.add_argument("--arg", action="append", default=[], metavar="NAME=VALUE",
+                    help="an input the item needs, for example --arg package=react (repeat for more)")
     ap.add_argument("--wait", type=float, default=300, help="seconds to wait for your approval (default 300)")
     args = ap.parse_args(argv)
     amount = parse_milli(args.amount)
+    try:
+        item_args = _parse_args(args.arg)
+    except ValueError as exc:
+        print(f"Refusing: {exc}", file=sys.stderr)
+        return 2
     if amount > MAX_MILLI:
         print(f"Refusing: {args.amount} is above the 0.100 live-test limit.", file=sys.stderr)
         return 2
@@ -99,7 +117,8 @@ def main(argv: list[str] | None = None) -> int:
     db_url = os.environ.get("DATABASE_URL") or os.environ.get("MANDATE_DB") or "sqlite:///mandate-live.db"
     ledger = Ledger(db_url, mandate_id="mnd_live_qatom")
     rail = _Recording(QatomRail(cfg, store=ledger))
-    p = run(ledger, rail, catalog_id=args.catalog_id, amount_milli=amount, resume=args.resume, wait_s=args.wait)
+    p = run(ledger, rail, catalog_id=args.catalog_id, amount_milli=amount, resume=args.resume,
+            arguments=item_args, wait_s=args.wait)
     out = {k: p[k] for k in ("id", "stage", "clause", "rail", "approval_id", "rail_tx_id")}
     out["amount"] = format_milli(p["amount"])
     print(json.dumps(out, indent=2))
