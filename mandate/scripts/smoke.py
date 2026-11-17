@@ -3,7 +3,7 @@
 
     python scripts/smoke.py            # mock rail, no network, no money
     python scripts/smoke.py --scenarios # five mock scenarios; UNKNOWN exits 1
-    python scripts/smoke.py --live     # ONE GOAT Flow Testnet3 order, 0.040 test USDC (needs GOAT_FLOW_* env).
+    python scripts/smoke.py --live     # ONE GOAT Flow Testnet3 order, 0.100 test USDC (needs GOAT_FLOW_* env).
                                        # Testnet tokens only; the script refuses any other origin or chain.
 
 Exits non-zero if any purchase ends in an unexpected state or the evidence chain is broken.
@@ -32,6 +32,9 @@ from backend.services.seller import MockSeller
 
 A = ("seller-a.example", "0x00000000000000000000000000000000000000a1")
 B = ("seller-b.example", "0x00000000000000000000000000000000000000b2")
+
+
+GOAT_MIN_ORDER_MILLI = 100  # 0.100 test USDC: GOAT Flow's minimum order
 
 
 def main() -> int:
@@ -68,7 +71,10 @@ def main() -> int:
                                    session_key_id=key_id)
 
     if not args.scenarios:
-        cases = [("micro purchase", buy(1, *A, "shipping-estimate", 40), "VERIFIED")]
+        # GOAT Flow refuses orders under 100000 base units (0.100 USDC at 6 decimals), observed live on
+        # 17 Nov 2026, so the live order uses that minimum. It is also exactly the auto-approve ceiling.
+        amount = GOAT_MIN_ORDER_MILLI if args.live else 40
+        cases = [("micro purchase", buy(1, *A, "shipping-estimate", amount), "VERIFIED")]
     else:
         cases = [
             ("micro purchase", buy(1, *A, "shipping-estimate", 40), "VERIFIED"),
