@@ -1,15 +1,16 @@
 """Production operability for the gateway: request ids, JSON logs, rate limiting, idempotent owner writes.
 
 Everything here is plain ASGI middleware plus two small storage interfaces (`RateLimiter`,
-`IdempotencyStore`). The in-memory implementations are per process; a shared store (Redis,
-PostgreSQL) replaces them by implementing the same interface and swapping the instance that
-`main.py` constructs. The routes never see the difference. See docs/OPERATIONS.md.
+`IdempotencyStore`). Idempotency claims live in the database (`SqlIdempotencyStore`), so every
+gateway process shares them; the rate limiter is still per process. A shared limiter replaces
+`InMemoryTokenBucket` by implementing the same interface. See docs/OPERATIONS.md.
 
 Nothing in this module logs or stores a header, token, query string or request body.
 Credentials only ever appear as a truncated SHA-256 fingerprint used as a bucket key.
 """
 from __future__ import annotations
 
+import base64
 import contextvars
 import hashlib
 import json
@@ -26,6 +27,7 @@ from datetime import UTC, datetime
 from typing import Any, Protocol
 
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 from starlette.datastructures import Headers, MutableHeaders
 
 Scope = dict[str, Any]
@@ -317,56 +319,145 @@ class IdempotencyRecord:
     response: StoredResponse
 
 
+@dataclass(frozen=True)
+class Claim:
+    """What `IdempotencyStore.claim` decided for one request.
+
+    NEW: this request owns the key and must run, then call `complete` or `release`.
+    REPLAY: an earlier request with the same body finished; `record` is its response.
+    MISMATCH: the key was first used with a different body.
+    IN_FLIGHT: the same key is running right now in this or another process.
+    """
+    kind: str
+    record: IdempotencyRecord | None = None
+
+
+NEW, REPLAY, MISMATCH, IN_FLIGHT = "NEW", "REPLAY", "MISMATCH", "IN_FLIGHT"
+DEFAULT_IN_FLIGHT_LEASE_S = 120  # a claim held longer than this is assumed to belong to a dead process
+
+
 class IdempotencyStore(Protocol):
-    """(key, route) -> the body hash seen first and the response it produced, for `ttl_s` seconds."""
+    """(key, route) -> one claim at a time. `claim` is atomic: of two concurrent identical requests,
+    exactly one gets NEW. Completed responses are kept for `ttl_s` seconds."""
 
-    def get(self, key: str, route: str) -> IdempotencyRecord | None: ...
+    def claim(self, key: str, route: str, body_sha256: str) -> Claim: ...
 
-    def put(self, key: str, route: str, body_sha256: str, response: StoredResponse, ttl_s: int) -> None: ...
+    def complete(self, key: str, route: str, response: StoredResponse, ttl_s: int) -> None: ...
+
+    def release(self, key: str, route: str) -> None: ...
 
     def clear(self) -> None: ...
 
 
 class InMemoryIdempotencyStore:
-    """Per-process store. Expired records are dropped lazily on read and swept on write."""
+    """Per-process store, for tests and single-process sandbox runs. Use `SqlIdempotencyStore`
+    whenever more than one gateway process serves the same database."""
 
-    def __init__(self, clock: Callable[[], float] = time.time) -> None:
-        self._clock = clock
-        self._records: dict[tuple[str, str], tuple[float, IdempotencyRecord]] = {}
+    def __init__(self, clock: Callable[[], float] = time.time, lease_s: int = DEFAULT_IN_FLIGHT_LEASE_S) -> None:
+        self._clock, self._lease_s = clock, lease_s
+        # (key, route) -> (expires_at, body_sha256, record or None while in flight)
+        self._rows: dict[tuple[str, str], tuple[float, str, IdempotencyRecord | None]] = {}
         self._lock = threading.Lock()
 
-    def get(self, key: str, route: str) -> IdempotencyRecord | None:
-        with self._lock:
-            found = self._records.get((key, route))
-            if found is None:
-                return None
-            expires, record = found
-            if self._clock() >= expires:
-                del self._records[(key, route)]
-                return None
-            return record
-
-    def put(self, key: str, route: str, body_sha256: str, response: StoredResponse, ttl_s: int) -> None:
+    def claim(self, key: str, route: str, body_sha256: str) -> Claim:
         now = self._clock()
         with self._lock:
-            if len(self._records) % 256 == 0:  # amortised sweep
-                for k in [k for k, (exp, _) in self._records.items() if now >= exp]:
-                    del self._records[k]
-            self._records[(key, route)] = (now + ttl_s, IdempotencyRecord(body_sha256, response))
+            row = self._rows.get((key, route))
+            if row is None or now >= row[0]:
+                if len(self._rows) % 256 == 0:  # amortised sweep
+                    for k in [k for k, r in self._rows.items() if now >= r[0]]:
+                        del self._rows[k]
+                self._rows[(key, route)] = (now + self._lease_s, body_sha256, None)
+                return Claim(NEW)
+            _, digest, record = row
+            if digest != body_sha256:
+                return Claim(MISMATCH)
+            return Claim(REPLAY, record) if record is not None else Claim(IN_FLIGHT)
+
+    def complete(self, key: str, route: str, response: StoredResponse, ttl_s: int) -> None:
+        with self._lock:
+            row = self._rows.get((key, route))
+            if row is not None:
+                self._rows[(key, route)] = (self._clock() + ttl_s, row[1], IdempotencyRecord(row[1], response))
+
+    def release(self, key: str, route: str) -> None:
+        with self._lock:
+            row = self._rows.get((key, route))
+            if row is not None and row[2] is None:
+                del self._rows[(key, route)]
 
     def clear(self) -> None:
         with self._lock:
-            self._records.clear()
+            self._rows.clear()
+
+
+class SqlIdempotencyStore:
+    """Claims kept in the `idempotency_keys` table (migration 6), shared by every gateway process.
+
+    Each step is one statement, so no extra lock is needed: the primary key makes the INSERT claim
+    atomic, and taking over an expired row is a conditional UPDATE that only one caller can win.
+    """
+
+    def __init__(self, db: Any, clock: Callable[[], float] = time.time,
+                 lease_s: int = DEFAULT_IN_FLIGHT_LEASE_S) -> None:
+        self.db, self._clock, self._lease_s = db, clock, lease_s
+
+    def claim(self, key: str, route: str, body_sha256: str) -> Claim:
+        now = self._clock()
+        lease = now + self._lease_s
+        won = self.db.execute(
+            "INSERT INTO idempotency_keys (key, route, body_sha256, state, expires_at) "
+            "VALUES (?, ?, ?, 'IN_FLIGHT', ?) ON CONFLICT (key, route) DO NOTHING",
+            (key, route, body_sha256, lease)).rowcount == 1
+        if won:
+            return Claim(NEW)
+        took_over = self.db.execute(
+            "UPDATE idempotency_keys SET body_sha256 = ?, state = 'IN_FLIGHT', status = NULL, headers_json = NULL, "
+            "body_b64 = NULL, expires_at = ? WHERE key = ? AND route = ? AND expires_at <= ?",
+            (body_sha256, lease, key, route, now)).rowcount == 1
+        if took_over:
+            return Claim(NEW)
+        row = self.db.execute(
+            "SELECT body_sha256, state, status, headers_json, body_b64 FROM idempotency_keys "
+            "WHERE key = ? AND route = ?", (key, route)).fetchone()
+        if row is None:  # deleted between our statements; one more attempt settles it
+            return self.claim(key, route, body_sha256)
+        if row[0] != body_sha256:
+            return Claim(MISMATCH)
+        if row[1] != "DONE":
+            return Claim(IN_FLIGHT)
+        headers = [(k.encode("latin-1"), v.encode("latin-1")) for k, v in json.loads(row[3])]
+        response = StoredResponse(int(row[2]), headers, base64.b64decode(row[4]))
+        return Claim(REPLAY, IdempotencyRecord(row[0], response))
+
+    def complete(self, key: str, route: str, response: StoredResponse, ttl_s: int) -> None:
+        headers = json.dumps([[k.decode("latin-1"), v.decode("latin-1")] for k, v in response.headers])
+        self.db.execute(
+            "UPDATE idempotency_keys SET state = 'DONE', status = ?, headers_json = ?, body_b64 = ?, expires_at = ? "
+            "WHERE key = ? AND route = ? AND state = 'IN_FLIGHT'",
+            (response.status, headers, base64.b64encode(response.body).decode("ascii"),
+             self._clock() + ttl_s, key, route))
+
+    def release(self, key: str, route: str) -> None:
+        self.db.execute("DELETE FROM idempotency_keys WHERE key = ? AND route = ? AND state = 'IN_FLIGHT'",
+                        (key, route))
+
+    def purge_expired(self) -> int:
+        return self.db.execute("DELETE FROM idempotency_keys WHERE expires_at <= ?", (self._clock(),)).rowcount
+
+    def clear(self) -> None:
+        self.db.execute("DELETE FROM idempotency_keys")
 
 
 class IdempotencyMiddleware:
     """Idempotency-Key on owner POST/PATCH requests (those carrying X-Owner-Token).
 
-    Same key + same body: the stored response, with `Idempotent-Replayed: true`.
+    Same key + same body, finished: the stored response, with `Idempotent-Replayed: true`.
+    Same key + same body, still running (here or in another process): 409, nothing executed.
     Same key + different body: 422, nothing executed.
     No header, agent requests, GETs: untouched.
     Keys are scoped per owner-token fingerprint and per `METHOD /path`. Only responses below 500
-    are stored, so a failed attempt can be retried with the same key.
+    are stored; a 5xx or a crash releases the key so the same request can be retried.
     """
 
     METHODS = frozenset({"POST", "PATCH"})
@@ -390,14 +481,15 @@ class IdempotencyMiddleware:
         body = await _read_body(receive)
         route = f"{scope['method']} {scope['path']}"
         key = f"{fingerprint(owner_token)}:{idem_key}"
-        digest = body_sha256(body)
-
-        record = self.store.get(key, route)
-        if record is not None:
-            if record.body_sha256 != digest:
-                return await JSONResponse({"detail": "Idempotency-Key was already used with a different body"},
-                                          status_code=422)(scope, receive, send)
-            return await _replay(record.response, send)
+        claim = await run_in_threadpool(self.store.claim, key, route, body_sha256(body))
+        if claim.kind == MISMATCH:
+            return await JSONResponse({"detail": "Idempotency-Key was already used with a different body"},
+                                      status_code=422)(scope, receive, send)
+        if claim.kind == IN_FLIGHT:
+            return await JSONResponse({"detail": "a request with this Idempotency-Key is still running; retry shortly"},
+                                      status_code=409, headers={"Retry-After": "1"})(scope, receive, send)
+        if claim.kind == REPLAY and claim.record is not None:
+            return await _replay(claim.record.response, send)
 
         replayed = [{"type": "http.request", "body": body, "more_body": False}]
 
@@ -419,9 +511,16 @@ class IdempotencyMiddleware:
                 complete = not message.get("more_body", False)
             await send(message)
 
-        await self.app(scope, receive_again, capture)
-        if complete and status is not None and status < 500:
-            self.store.put(key, route, digest, StoredResponse(status, raw_headers, b"".join(chunks)), self.ttl_s())
+        stored = False
+        try:
+            await self.app(scope, receive_again, capture)
+            if complete and status is not None and status < 500:
+                await run_in_threadpool(self.store.complete, key, route,
+                                        StoredResponse(status, raw_headers, b"".join(chunks)), self.ttl_s())
+                stored = True
+        finally:
+            if not stored:
+                await run_in_threadpool(self.store.release, key, route)
 
 
 async def _read_body(receive: Receive) -> bytes:

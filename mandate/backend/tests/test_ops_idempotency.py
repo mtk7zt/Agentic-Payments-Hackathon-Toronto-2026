@@ -107,23 +107,73 @@ def test_error_responses_are_replayed_but_server_errors_are_not(monkeypatch):
     assert r.status_code == 201 and "Idempotent-Replayed" not in r.headers
 
 
-def test_records_expire_after_the_ttl():
+def test_same_key_still_running_is_refused_not_run_twice():
+    # Another request (in this or another process) holds the claim: nothing runs, the caller is told to retry.
+    key = f"{ops.fingerprint(OWNER_TOKEN)}:busy-0001"
+    assert main.idempotency_store.claim(key, "POST /api/v1/session-keys", ops.body_sha256(b"")).kind == ops.NEW
+    before = key_count()
+    r = c.post("/api/v1/session-keys", headers={"Idempotency-Key": "busy-0001"})
+    assert r.status_code == 409 and r.headers["Retry-After"] == "1"
+    assert key_count() == before
+    main.idempotency_store.release(key, "POST /api/v1/session-keys")
+    assert c.post("/api/v1/session-keys", headers={"Idempotency-Key": "busy-0001"}).status_code == 201
+
+
+def _stores(clock):
+    from backend.core.db import connect
+    return [ops.InMemoryIdempotencyStore(clock=clock, lease_s=60),
+            ops.SqlIdempotencyStore(connect(":memory:"), clock=clock, lease_s=60)]
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["memory", "sql"])
+def test_claim_lifecycle(which):
     now = [1_000_000.0]
-    store = ops.InMemoryIdempotencyStore(clock=lambda: now[0])
-    stored = ops.StoredResponse(status=201, headers=[(b"content-type", b"application/json")], body=b'{"a":1}')
-    store.put("k", "POST /x", "h1", stored, ttl_s=24 * 3600)
-    assert store.get("k", "POST /x") == ops.IdempotencyRecord("h1", stored)
-    now[0] += 24 * 3600 - 1
-    assert store.get("k", "POST /x") is not None
-    now[0] += 2
-    assert store.get("k", "POST /x") is None
-
-
-def test_replay_reuses_the_stored_body_hash_contract():
-    store = ops.InMemoryIdempotencyStore()
-    stored = ops.StoredResponse(status=200, headers=[], body=b"{}")
-    store.put("k", "PATCH /y", ops.body_sha256(b'{"n":1}'), stored, ttl_s=60)
-    assert store.get("k", "PATCH /y").body_sha256 == ops.body_sha256(b'{"n":1}')
-    assert store.get("k", "PATCH /y").body_sha256 != ops.body_sha256(b'{"n":2}')
+    store = _stores(lambda: now[0])[which]
     store.clear()
-    assert store.get("k", "PATCH /y") is None
+    stored = ops.StoredResponse(status=201, headers=[(b"content-type", b"application/json")], body=b'{"a":1}')
+    assert store.claim("k", "POST /x", "h1").kind == ops.NEW
+    assert store.claim("k", "POST /x", "h1").kind == ops.IN_FLIGHT
+    assert store.claim("k", "POST /x", "h2").kind == ops.MISMATCH
+    store.complete("k", "POST /x", stored, ttl_s=24 * 3600)
+    replay = store.claim("k", "POST /x", "h1")
+    assert replay.kind == ops.REPLAY and replay.record == ops.IdempotencyRecord("h1", stored)
+    assert store.claim("k", "PATCH /x", "h1").kind == ops.NEW  # scoped per route
+    now[0] += 24 * 3600 - 1
+    assert store.claim("k", "POST /x", "h1").kind == ops.REPLAY
+    now[0] += 2
+    assert store.claim("k", "POST /x", "h1").kind == ops.NEW  # retention over: the key is free again
+
+
+@pytest.mark.parametrize("which", [0, 1], ids=["memory", "sql"])
+def test_release_and_dead_process_lease(which):
+    now = [1_000_000.0]
+    store = _stores(lambda: now[0])[which]
+    store.clear()
+    assert store.claim("k", "POST /x", "h1").kind == ops.NEW
+    store.release("k", "POST /x")  # a 5xx or crash: retry allowed
+    assert store.claim("k", "POST /x", "h1").kind == ops.NEW
+    now[0] += 59
+    assert store.claim("k", "POST /x", "h1").kind == ops.IN_FLIGHT
+    now[0] += 2  # the holder died without releasing: its lease runs out and the key is taken over
+    assert store.claim("k", "POST /x", "h1").kind == ops.NEW
+
+
+def test_sql_claims_are_exclusive_across_connections(tmp_path):
+    # Two gateway processes = two connections to one database. Of many simultaneous claims, one wins.
+    import threading
+
+    from backend.core.db import connect
+    url = f"sqlite:///{tmp_path / 'idem.db'}"
+    stores = [ops.SqlIdempotencyStore(connect(url)) for _ in range(2)]
+    results, gate = [], threading.Barrier(8)
+
+    def go(i):
+        gate.wait()
+        results.append(stores[i % 2].claim("k", "POST /x", "h").kind)
+
+    threads = [threading.Thread(target=go, args=(i,)) for i in range(8)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert results.count(ops.NEW) == 1 and results.count(ops.IN_FLIGHT) == 7

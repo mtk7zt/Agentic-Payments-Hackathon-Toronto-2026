@@ -20,6 +20,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..config import load_settings
+from ..core.db import connect
 from ..core.ledger import Ledger, LedgerError
 from ..core.policy import Intent
 from ..core.sessions import SessionState
@@ -42,7 +43,6 @@ log = logging.getLogger("mandate.api")
 settings = load_settings()  # raises ConfigError, listing every problem, before anything else starts
 ops.check_rate_limit_config(settings.mode)  # fails now if a limit is malformed; warns if disabled in production
 rate_limiter: ops.RateLimiter = ops.InMemoryTokenBucket()  # swap for a shared implementation; routes never change
-idempotency_store: ops.IdempotencyStore = ops.InMemoryIdempotencyStore()
 app = FastAPI(title="Mandate gateway", version="0.1.0")
 class CatchUnexpected:
     """Turns an unhandled error into a JSON 500 *inside* the CORS layer, so the browser still sees CORS
@@ -73,6 +73,9 @@ class CatchUnexpected:
 # The rate limiter and the idempotency layer sit inside CORS so their 429 and 422 still carry CORS headers;
 # the request-id layer is outermost so every response, preflights included, is logged and tagged.
 app.add_middleware(CatchUnexpected)
+# Idempotency claims use their own connection to the ledger's database, so they are shared by every
+# gateway process and never wait behind a ledger write.
+idempotency_store: ops.IdempotencyStore = ops.SqlIdempotencyStore(connect(settings.database_url))
 app.add_middleware(ops.IdempotencyMiddleware, store=idempotency_store)
 app.add_middleware(ops.RateLimitMiddleware, limiter=rate_limiter)
 app.add_middleware(
