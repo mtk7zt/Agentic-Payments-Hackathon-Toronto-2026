@@ -57,7 +57,7 @@ agent ──propose──▶ Mandate gateway ──evaluate──▶ policy (pur
 owner ──cockpit / API──▶ rules, approvals, kill switch, evidence, event stream
 ```
 
-Details: [architecture and state machine](docs/ARCHITECTURE.md) · [security model](SECURITY.md) · [owner controls](docs/OWNER_CONTROLS.md) · [agent loop](docs/AGENT_LOOP.md) · [wallet monitoring](docs/WALLET_MONITORING.md) · [Qatom rail](docs/rails/QATOM.md)
+Details: [architecture and state machine](docs/ARCHITECTURE.md) · [security model](SECURITY.md) · [owner controls](docs/OWNER_CONTROLS.md) · [agent loop](docs/AGENT_LOOP.md) · [wallet monitoring](docs/WALLET_MONITORING.md) · [Qatom rail](docs/rails/QATOM.md) · [deploying](docs/DEPLOY.md) · [operations](docs/OPERATIONS.md)
 
 ```
 backend/

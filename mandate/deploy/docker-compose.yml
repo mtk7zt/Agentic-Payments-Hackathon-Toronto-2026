@@ -1,0 +1,47 @@
+# Mandate on one server: HTTPS proxy -> gateway -> seller (seller is never exposed publicly).
+#   cd mandate/deploy
+#   docker compose --env-file ../.env up -d --build
+# --env-file ../.env fills the ${...} values below; the gateway also reads the whole file.
+# The seller only ever receives MANDATE_SELLER_TOKEN. See docs/DEPLOY.md.
+name: mandate
+
+services:
+  gateway:
+    build: ..
+    image: mandate:latest
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      MANDATE_SELLER_URL: http://seller:8001
+      MANDATE_TRUST_PROXY_HEADERS: "1"        # the only way in is through Caddy below
+      QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json
+    volumes:
+      - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
+    expose: ["8000"]
+    depends_on: [seller]
+
+  seller:
+    image: mandate:latest
+    restart: unless-stopped
+    command: ["uvicorn", "backend.seller_api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      MANDATE_SELLER_TOKEN: ${MANDATE_SELLER_TOKEN:?set MANDATE_SELLER_TOKEN in ../.env}
+    healthcheck:
+      disable: true                            # the image healthcheck probes the gateway port
+    expose: ["8001"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      MANDATE_DOMAIN: ${MANDATE_DOMAIN:?set MANDATE_DOMAIN (for example api.example.com) in ../.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [gateway]
+
+volumes:
+  caddy_data:
+  caddy_config:

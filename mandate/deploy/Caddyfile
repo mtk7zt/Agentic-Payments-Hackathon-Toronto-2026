@@ -1,0 +1,11 @@
+# Automatic HTTPS for the gateway. Point an A record for MANDATE_DOMAIN at this server first.
+{$MANDATE_DOMAIN} {
+	encode gzip
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options nosniff
+		Referrer-Policy no-referrer
+		-Server
+	}
+	reverse_proxy gateway:8000
+}
