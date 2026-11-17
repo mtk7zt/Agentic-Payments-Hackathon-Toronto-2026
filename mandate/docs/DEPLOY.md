@@ -89,6 +89,39 @@ secret-file feature mounted at `/home/mandate/.qatom/token.json` and set
 `QATOM_TOKEN_FILE=/home/mandate/.qatom/token.json`.
 Point the health check at `/live` and the readiness check at `/ready`.
 
+## Monitoring with Datadog (optional)
+
+The gateway already writes one JSON log line per request and serves `/live` and `/ready`.
+The compose file has a Datadog agent behind the `monitoring` profile; it stays off until you
+turn it on.
+
+1. In Datadog, go to Organization Settings → API Keys and copy a key. Add it to `.env` as
+   `DD_API_KEY=...`. If your Datadog account is not on `datadoghq.com` (for example `us5.datadoghq.com`),
+   set `DD_SITE` too.
+2. Start with the profile:
+
+   ```bash
+   docker compose --env-file ../.env --profile monitoring up -d
+   ```
+
+3. In Datadog, check **Logs** for `service:mandate-gateway` and **Infrastructure** for the host.
+
+Suggested monitors (Datadog → Monitors → New):
+
+| Monitor | Condition | Why |
+| --- | --- | --- |
+| Gateway not ready | the `mandate-ready` HTTP check failing for 2 minutes | The database or the gateway is down |
+| Server errors | access-log count `service:mandate-gateway @status:>=500` above 5 in 5 minutes | Unhandled errors reach users |
+| Throttling | access-log count `@status:429` above 50 in 5 minutes | An agent is looping or someone is probing |
+| Slow requests | access-log `@duration_ms` p95 above 2000 for 10 minutes | Database or rail latency |
+
+Purchase outcomes (a rail refusal, an unknown outcome waiting for you) are recorded in the
+evidence log in the database, not in the request logs, so these monitors do not see them yet.
+Watching them needs a log line per evidence event, which is a separate change.
+
+Logs never contain tokens, headers or request bodies (see `docs/OPERATIONS.md`), so they are
+safe to send. Only containers labelled for Datadog are collected; the seller and Caddy are not.
+
 ## Scaling and limits
 
 - Run **one gateway process** for now. Idempotency is shared through the database, but the rate

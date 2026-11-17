@@ -19,6 +19,10 @@ services:
       - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
     expose: ["8000"]
     depends_on: [seller]
+    labels:
+      # Read only by the optional Datadog agent below (profile "monitoring").
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "mandate-gateway"}]'
+      com.datadoghq.ad.checks: '{"http_check": {"instances": [{"name": "mandate-ready", "url": "http://%%host%%:8000/ready", "timeout": 5}]}}'
 
   seller:
     image: mandate:latest
@@ -41,6 +45,26 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [gateway]
+
+  # Optional monitoring: docker compose --env-file ../.env --profile monitoring up -d
+  # Needs DD_API_KEY (and DD_SITE if not datadoghq.com) in ../.env. Collects the gateway's JSON logs,
+  # container metrics and a /ready check every 15 seconds. Nothing is sent unless this profile is on.
+  datadog:
+    image: gcr.io/datadoghq/agent:7
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    environment:
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+      DD_HOSTNAME: ${MANDATE_DOMAIN:-mandate}
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "false"   # only containers labelled above
+      DD_PROCESS_AGENT_ENABLED: "false"
+      DD_APM_ENABLED: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
 
 volumes:
   caddy_data:
