@@ -1,0 +1,71 @@
+# Mandate on one server: HTTPS proxy -> gateway -> seller (seller is never exposed publicly).
+#   cd mandate/deploy
+#   docker compose --env-file ../.env up -d --build
+# --env-file ../.env fills the ${...} values below; the gateway also reads the whole file.
+# The seller only ever receives MANDATE_SELLER_TOKEN. See docs/DEPLOY.md.
+name: mandate
+
+services:
+  gateway:
+    build: ..
+    image: mandate:latest
+    restart: unless-stopped
+    env_file: ../.env
+    environment:
+      MANDATE_SELLER_URL: http://seller:8001
+      MANDATE_TRUST_PROXY_HEADERS: "1"        # the only way in is through Caddy below
+      QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json
+    volumes:
+      - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
+    expose: ["8000"]
+    depends_on: [seller]
+    labels:
+      # Read only by the optional Datadog agent below (profile "monitoring").
+      com.datadoghq.ad.logs: '[{"source": "python", "service": "mandate-gateway"}]'
+      com.datadoghq.ad.checks: '{"http_check": {"instances": [{"name": "mandate-ready", "url": "http://%%host%%:8000/ready", "timeout": 5}]}}'
+
+  seller:
+    image: mandate:latest
+    restart: unless-stopped
+    command: ["uvicorn", "backend.seller_api.main:app", "--host", "0.0.0.0", "--port", "8001"]
+    environment:
+      MANDATE_SELLER_TOKEN: ${MANDATE_SELLER_TOKEN:?set MANDATE_SELLER_TOKEN in ../.env}
+    healthcheck:
+      disable: true                            # the image healthcheck probes the gateway port
+    expose: ["8001"]
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    ports: ["80:80", "443:443"]
+    environment:
+      MANDATE_DOMAIN: ${MANDATE_DOMAIN:?set MANDATE_DOMAIN (for example api.example.com) in ../.env}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on: [gateway]
+
+  # Optional monitoring: docker compose --env-file ../.env --profile monitoring up -d
+  # Needs DD_API_KEY (and DD_SITE if not datadoghq.com) in ../.env. Collects the gateway's JSON logs,
+  # container metrics and a /ready check every 15 seconds. Nothing is sent unless this profile is on.
+  datadog:
+    image: gcr.io/datadoghq/agent:7
+    profiles: ["monitoring"]
+    restart: unless-stopped
+    environment:
+      DD_API_KEY: ${DD_API_KEY:-}
+      DD_SITE: ${DD_SITE:-datadoghq.com}
+      DD_HOSTNAME: ${MANDATE_DOMAIN:-mandate}
+      DD_LOGS_ENABLED: "true"
+      DD_LOGS_CONFIG_CONTAINER_COLLECT_ALL: "false"   # only containers labelled above
+      DD_PROCESS_AGENT_ENABLED: "false"
+      DD_APM_ENABLED: "false"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - /proc/:/host/proc/:ro
+      - /sys/fs/cgroup/:/host/sys/fs/cgroup:ro
+
+volumes:
+  caddy_data:
+  caddy_config:
