@@ -166,10 +166,36 @@ def _v5_postgres_lockdown(db: Any) -> None:
                 db.execute(f"REVOKE ALL ON TABLE {table} FROM {role}")
 
 
+def _v6_idempotency_keys(db: Any) -> None:
+    """Owner Idempotency-Key records in the database, so every gateway process sees the same claims.
+
+    A row is IN_FLIGHT while the first request runs (until `expires_at`, a short lease that frees the
+    key if that process dies) and DONE once its response is stored (until `expires_at`, the retention
+    window). Response bodies are kept base64-encoded so the column type is plain TEXT everywhere.
+    """
+    t = _types(db)
+    db.script(f"""
+CREATE TABLE IF NOT EXISTS idempotency_keys (
+  key TEXT NOT NULL, route TEXT NOT NULL, body_sha256 TEXT NOT NULL,
+  state TEXT NOT NULL CHECK (state IN ('IN_FLIGHT','DONE')),
+  status INTEGER, headers_json TEXT, body_b64 TEXT, expires_at {t['REAL']} NOT NULL,
+  PRIMARY KEY (key, route)
+);
+CREATE INDEX IF NOT EXISTS idempotency_keys_expires ON idempotency_keys (expires_at);
+""")
+    if db.dialect == "postgresql":
+        db.execute("ALTER TABLE idempotency_keys ENABLE ROW LEVEL SECURITY")
+        db.execute("REVOKE ALL ON TABLE idempotency_keys FROM PUBLIC")
+        for role in ("anon", "authenticated"):
+            if db.execute("SELECT 1 FROM pg_roles WHERE rolname = ?", (role,)).fetchone():
+                db.execute(f"REVOKE ALL ON TABLE idempotency_keys FROM {role}")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "base tables and append-only evidence", _v1_base),
     Migration(2, "rail records and approval binding columns", _v2_purchase_columns),
     Migration(3, "query indexes", _v3_indexes),
     Migration(4, "checkpoint issue time for ordering", _v4_checkpoint_order),
     Migration(5, "postgres: row-level security on, public grants revoked", _v5_postgres_lockdown),
+    Migration(6, "idempotency keys shared by every gateway process", _v6_idempotency_keys),
 )

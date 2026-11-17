@@ -115,31 +115,37 @@ and `Idempotency-Key`. Agent routes, `GET`s and requests without the header are 
 
 | Situation | Result |
 | --- | --- |
-| First request with a key | Executed normally. The response (status, headers, body) is stored under `(owner fingerprint + key, "METHOD /path", sha256(body))` for `MANDATE_IDEMPOTENCY_TTL_S`. |
+| First request with a key | Claims the key, then runs. The response (status, headers, body) is stored under `(owner fingerprint + key, "METHOD /path", sha256(body))` for `MANDATE_IDEMPOTENCY_TTL_S`. |
+| Same key while the first request is still running | `409 {"detail": "a request with this Idempotency-Key is still running; retry shortly"}` with `Retry-After: 1`. Nothing is executed. |
 | Same key, same route, same body | The stored response is returned without touching the ledger, with `Idempotent-Replayed: true`. |
 | Same key, same route, different body | `422 {"detail": "Idempotency-Key was already used with a different body"}`. Nothing is executed. |
 | Same key, different route | Independent record; the route is part of the key. |
 | Malformed key (empty, over 128 chars, characters outside `A-Z a-z 0-9 _ . : -`) | `422` before anything runs. |
-| The first attempt ended in a 5xx | Not stored, so a retry with the same key executes again. 4xx responses are stored and replayed, since they are the deterministic answer to that body. |
+| The first attempt ended in a 5xx or crashed | The claim is released, so a retry with the same key executes again. 4xx responses are stored and replayed, since they are the deterministic answer to that body. |
+| The process holding a claim died | The claim is a lease of 120 seconds; after it runs out the next request with that key executes. |
 
 Keys are scoped by owner-token fingerprint, so two owners (or a rotated token) never collide.
-Two concurrent requests with the same key both execute; the last to finish is the one stored.
-A shared store that needs exactly-once semantics under concurrency should take a lock or use a
-conditional insert in `put`.
 
-## Swapping the in-memory stores for a shared store
+Claims live in the database, in the `idempotency_keys` table (migration 6), through
+`SqlIdempotencyStore`. It uses its own connection to the ledger's database, so every gateway
+worker and replica sees the same claims, and a claim never waits behind a ledger write. A claim is
+one `INSERT … ON CONFLICT DO NOTHING`; taking over an expired row is one conditional `UPDATE`.
+Of any number of simultaneous requests with one key, exactly one runs
+(`test_sql_claims_are_exclusive_across_connections` checks this with two connections on SQLite and
+PostgreSQL). Expired rows are reclaimed when their key is next used; `SqlIdempotencyStore.purge_expired()`
+deletes the rest and can be run from a scheduled job.
 
-Every mechanism is a small interface with one in-memory implementation, constructed once in
-`backend/api/main.py`:
+## Swapping the rate limiter for a shared store
+
+Idempotency is already shared through the database. The rate limiter is still per process,
+constructed once in `backend/api/main.py`:
 
 ```python
 rate_limiter: ops.RateLimiter = ops.InMemoryTokenBucket()
-idempotency_store: ops.IdempotencyStore = ops.InMemoryIdempotencyStore()
 ```
 
-Both are per process. Behind more than one worker or replica, a client gets one bucket per
-worker (so effectively `N × limit`) and an idempotent replay only hits if the retry lands on the
-same worker. To move to Redis or PostgreSQL:
+Behind more than one worker or replica, a client gets one bucket per worker (so effectively
+`N × limit`). To move it to Redis or PostgreSQL:
 
 1. Implement the protocol in a new module (for example `backend/core/rate_limit_redis.py`,
    owned by the storage layer):
@@ -148,24 +154,16 @@ same worker. To move to Redis or PostgreSQL:
    class RateLimiter(Protocol):
        def acquire(self, key: str, limit: int, window_s: float = 60.0) -> RateDecision: ...
        def reset(self) -> None: ...
-
-   class IdempotencyStore(Protocol):
-       def get(self, key: str, route: str) -> IdempotencyRecord | None: ...
-       def put(self, key: str, route: str, body_sha256: str, response: StoredResponse, ttl_s: int) -> None: ...
-       def clear(self) -> None: ...
    ```
 
    For Redis, `acquire` is one Lua script doing the refill-and-take atomically (`EVAL` with the
-   key, limit, rate and the server clock), and the idempotency record is a hash with `EXPIRE`
-   set to `ttl_s`. For PostgreSQL, a `rate_buckets(key, tokens, last)` table updated in one
-   `UPDATE … RETURNING`, and an `idempotency(key, route, body_sha256, status, headers, body,
-   expires_at)` table with `INSERT … ON CONFLICT`.
-2. Change the two constructor lines in `main.py` (they can read a `MANDATE_RATE_LIMIT_URL` /
-   `MANDATE_IDEMPOTENCY_URL` and pick the implementation).
-3. Run `backend/tests/test_ops_rate_limit.py` and `test_ops_idempotency.py` against the new
-   implementation; the middleware tests do not care which store is behind the interface, and
-   the unit tests at the bottom of each file show the contract (`clock` injection for TTL and
-   refill, `keys()`/`clear()` for inspection).
+   key, limit, rate and the server clock). For PostgreSQL, a `rate_buckets(key, tokens, last)`
+   table updated in one `UPDATE … RETURNING`.
+2. Change the constructor line in `main.py` (it can read a `MANDATE_RATE_LIMIT_URL` and pick the
+   implementation).
+3. Run `backend/tests/test_ops_rate_limit.py` against the new implementation; the middleware tests
+   do not care which limiter is behind the interface, and the unit tests at the bottom of the file
+   show the contract (`clock` injection for refill, `keys()`/`reset()` for inspection).
 
 Nothing under `backend/api/main.py`'s routes changes, and the headers, status codes and log
 lines stay identical.
