@@ -24,7 +24,7 @@ from typing import Any
 
 import httpx
 
-from .payment_rail import RailOutcome, RailResult
+from .payment_rail import RailOutcome, RailResult, provider_message
 
 _BOUGHT = re.compile(r"Bought .*? for ([0-9]+(?:\.[0-9]+)?) USD-TDN.*?Transaction:\s*([0-9a-fA-F-]{36})", re.DOTALL)
 _APPROVAL = re.compile(r"Approval id:\s*(aar_[0-9a-fA-F-]+)")
@@ -155,9 +155,9 @@ class QatomRail:
             return RailResult(RailOutcome.PENDING, APPROVAL_PREFIX + a.group(1), "APPROVAL_REQUIRED",
                               {"approval_id": a.group(1), "approval_url": u.group(1) if u else None})
         if _INSUFFICIENT.search(text):
-            return RailResult(RailOutcome.UNPAID, status="INSUFFICIENT_FUNDS", raw={"text": text[:500]})
+            return RailResult(RailOutcome.UNPAID, status=_with_reason("INSUFFICIENT_FUNDS", text), raw={"text": text[:500]})
         if is_error:
-            return RailResult(RailOutcome.UNPAID, status="REFUSED", raw={"text": text[:500]})
+            return RailResult(RailOutcome.UNPAID, status=_with_reason("REFUSED", text), raw={"text": text[:500]})
         return RailResult(RailOutcome.UNKNOWN, raw={"text": text[:500]})
 
     def create_order(self, *, dapp_order_id: str, amount_milli: int, item: str | None = None,
@@ -184,3 +184,9 @@ class QatomRail:
 
     def get_proof(self, order_id: str) -> dict[str, Any]:
         return {"rail": "qatom", "transaction_id": order_id}
+
+
+def _with_reason(status: str, text: str) -> str:
+    """`REFUSED: <Qatom's own words>` so the evidence log says why, never anything credential-like."""
+    msg = provider_message(text)
+    return f"{status}: {msg}" if msg else status

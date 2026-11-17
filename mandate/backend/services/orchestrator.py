@@ -5,6 +5,7 @@ settlement is committed before delivery is checked.
 """
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from ..core.ledger import Ledger, Stage
@@ -39,8 +40,12 @@ def execute(ledger: Ledger, rail: PaymentRail, seller: Seller | None, purchase_i
     claim_key = ledger.claim_dispatch(purchase_id, getattr(rail, "name", None))  # durable intent, before any money moves
     p0 = ledger.purchase(purchase_id)
     amount = p0["amount"]
+    # Item inputs travel inside the tool call, which the policy hash and any approval digest already cover,
+    # so the rail receives exactly the arguments that were checked and approved.
+    arguments = json.loads(p0["tool_call_json"]).get("arguments")
+    extra = {"arguments": arguments} if isinstance(arguments, dict) and arguments else {}
     try:
-        res = rail.create_order(dapp_order_id=claim_key, amount_milli=amount, item=p0["item"])
+        res = rail.create_order(dapp_order_id=claim_key, amount_milli=amount, item=p0["item"], **extra)
     except Exception as exc:  # noqa: BLE001 - any adapter failure may follow an accepted payment
         # An adapter can fail after the rail accepted the request. Never assume
         # an exception proves the payment did not happen.

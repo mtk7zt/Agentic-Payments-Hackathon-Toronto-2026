@@ -85,3 +85,12 @@ def test_mcp_client_initializes_once_and_reads_sse():
     c = McpClient("https://x/mcp", "tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert c.call_tool("agent_wallet_info", {}) == ("hello", False)
     assert seen[1][1] == "s1" and seen[0][2] == "Bearer tok"
+
+
+def test_refusal_keeps_qatom_reason_without_credential_like_values():
+    r = rail([("Missing required input: package. Approve at https://x/aar_37b275ee-ef60-47f0-b9c2-bcdd2051f858", True)])
+    res = r.create_order(dapp_order_id="k", amount_milli=1, item="btc_read")
+    assert res.outcome is RailOutcome.UNPAID and res.status == "REFUSED"  # message held an opaque id: dropped
+    r = rail([("Missing required input: package.", True)])
+    res = r.create_order(dapp_order_id="k", amount_milli=1, item="btc_read")
+    assert res.status == "REFUSED: Missing required input: package."

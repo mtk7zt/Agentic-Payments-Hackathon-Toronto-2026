@@ -42,7 +42,8 @@ class RailResult:
 class PaymentRail(Protocol):
     name: str
 
-    def create_order(self, *, dapp_order_id: str, amount_milli: int, item: str | None = None) -> RailResult: ...
+    def create_order(self, *, dapp_order_id: str, amount_milli: int, item: str | None = None,
+                     arguments: dict[str, Any] | None = None) -> RailResult: ...
     def get_order(self, order_id: str) -> RailResult: ...
     def get_proof(self, order_id: str) -> dict[str, Any]: ...
 
@@ -166,11 +167,17 @@ def _reason(status_code: int, payload: dict[str, Any]) -> str:
     data = payload.get("data") if isinstance(payload.get("data"), dict) else payload
     for key in ("message", "msg", "error", "error_message", "detail", "reason", "code"):
         val = data.get(key) if isinstance(data, dict) else None
-        if isinstance(val, (str, int)) and str(val).strip():
-            text = " ".join(str(val).split())[:160]
-            if not _TOKENISH.search(text):
-                return f"HTTP_{status_code}: {text}"
+        text = provider_message(val) if isinstance(val, (str, int)) else ""
+        if text:
+            return f"HTTP_{status_code}: {text}"
     return f"HTTP_{status_code}"
+
+
+def provider_message(value: Any, limit: int = 160) -> str:
+    """A provider's message made safe to keep in evidence: one line, trimmed, and empty if it holds
+    anything that looks like a credential, link token or other long opaque value."""
+    text = " ".join(str(value).split())[:limit]
+    return "" if not text or _TOKENISH.search(text) else text
 
 
 def _json(r: httpx.Response) -> dict[str, Any]:
