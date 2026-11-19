@@ -209,7 +209,9 @@ for example `10.128.0.2`. Never set `ADMIN_BIND` to `0.0.0.0`.
 File Browser is rooted at `/srv/mandate` (or `MANDATE_ADMIN_ROOT`). It has no Docker socket.
 Set `FILEBROWSER_PASSWORD` before the first start. The password is stored then; it is not
 `admin`. Portainer has the Docker socket, so it is root-equivalent. It asks you to create
-the admin user on first visit. There is no default password. pgweb connects as
+the admin user on first visit. There is no default password. `PORTAINER_TRUSTED_ORIGINS`
+is a comma-separated list of bare hosts, with no scheme and no port. The default is
+`127.0.0.1`. pgweb connects as
 `mandate_readonly` and should be stopped when you are finished. Keep that password URL-safe;
 it is placed in the connection string.
 
