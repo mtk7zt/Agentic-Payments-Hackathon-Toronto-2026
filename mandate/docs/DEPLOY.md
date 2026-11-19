@@ -240,6 +240,71 @@ gcloud compute ssh mandate-prod --tunnel-through-iap --zone=us-central1-a
 Then open `http://127.0.0.1:8443/files`, `http://127.0.0.1:8443/portainer`, and, while pgweb
 is running, `http://127.0.0.1:8443/pgweb`. Cockpit is `https://127.0.0.1:9090`.
 
+## Production VM on Google Cloud
+
+GitHub Actions does not create the VM. The deploy account cannot create addresses or
+firewall rules. From Cloud Shell, as the project owner, in a checkout of this repo:
+
+```bash
+bash mandate/deploy/gcp/create-server.sh
+```
+
+Run it again any time. It creates what is missing and leaves what is already there.
+It does not change IAM and it does not print secret values. It reserves the regional
+address `mandate-prod-ip`, opens 80 and 443 to the internet on the tag `mandate-web`,
+and opens 22, 8443 and 9090 only from `35.235.240.0/20`. It does not open 5432, 8000
+or 8001. It deletes `default-allow-ssh` and `default-allow-rdp` when they exist,
+because those rules open ports to the internet. The VM is `e2-medium`, Ubuntu 24.04,
+Shielded VM, OS Login, a 20 GB boot disk and a 10 GB data disk. Both disks get a
+daily snapshot kept for 14 days.
+
+The script prints the static IP. In GoDaddy, add the A record from the DNS section
+above: host `api`, value that IP.
+
+On every boot the startup script formats the data disk only when it has no filesystem,
+mounts it at `/srv/mandate` by UUID, adds a 2 GB swap file, installs Docker Engine and
+the Compose plugin from Docker's apt repository, and clones this repo to
+`/srv/mandate/app` if that checkout is missing. OS Login users in `google-sudoers`
+can update that checkout. `remote-up.sh` uses `sudo docker` when the login user is
+not in the `docker` group.
+
+It writes `/srv/mandate/app/mandate/.env` mode 600 from Secret Manager, using the
+runtime service account. A secret still set to `placeholder-change-me` is skipped.
+The log line names the secret and not the value.
+
+| Secret | Written as |
+| --- | --- |
+| `mandate-database-url` | `DATABASE_URL`. Leave the placeholder to use Postgres on this VM (the file gets an empty `DATABASE_URL` and the wrapper builds the URL). |
+| `mandate-postgres-password` | `POSTGRES_PASSWORD` |
+| `mandate-db-password` | `MANDATE_DB_PASSWORD`. The bootstrap does not create this secret. Add it before the first deploy. |
+| `mandate-readonly-password` | `MANDATE_READONLY_PASSWORD`. Same. |
+| `mandate-owner-token` | `MANDATE_OWNER_TOKEN` |
+| `mandate-checkpoint-key` | `MANDATE_CHECKPOINT_KEY` |
+| `mandate-seller-token` | `MANDATE_SELLER_TOKEN` |
+| `mandate-goat-flow-api-key` | `GOAT_FLOW_API_KEY` |
+| `mandate-qatom-token` | `deploy/secrets/qatom-token.json`, mode 600, owned by uid 10001. Not an environment variable. |
+| `mandate-backup-encryption-key` | `AGE_RECIPIENT` in `/etc/mandate/backup.env`. The `age1` public key only. A private key is not written. |
+
+`MANDATE_MODE=production`, `MANDATE_RAIL=qatom`, `MANDATE_SELLER_MODE=http`,
+`MANDATE_SELLER_URL=http://seller:8001`, `MANDATE_DOMAIN=api.mandatepay.tech` and
+`MANDATE_PGDATA=/srv/mandate/postgres` are written as plain values. Make each password
+with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`, a different value
+each time. `MANDATE_DB_PASSWORD` has to stay in that alphabet. Reboot the VM after the
+secrets are real so startup writes `.env` again.
+
+Set the repository variables to the block the script printed.
+`GCP_WIF_PROVIDER` is the full provider name from the bootstrap. This script does not
+create it. Then in GitHub open Actions, select the deploy workflow, and use Run workflow
+on `main`.
+
+The backup bucket should not be public:
+
+```bash
+gcloud storage buckets describe gs://mandate-515200-mandate-backups --format="value(public_access_prevention)"
+```
+
+That should print `enforced`.
+
 ## Deploy from GitHub
 
 `.github/workflows/deploy.yml` runs on a push to `main` and when someone starts it by hand.
