@@ -6,18 +6,61 @@ Mandate runs as two small services from one image:
 - **Seller** (`backend.seller_api.main:app`, port 8001): the delivery check. It is never exposed
   to the internet; only the gateway talks to it.
 
-The database is PostgreSQL. Supabase is supported as is: use the session pooler URI with the
-`mandate_gateway` login. Before the first deploy, run `py -m backend.migrate` once from your own
-machine; the gateway also applies any missing migration when it starts.
+The database is PostgreSQL. The compose file can run PostgreSQL 16 on the same server (see
+below), or you can point `DATABASE_URL` at a hosted server such as Supabase. For Supabase, use
+the session pooler URI with the `mandate_gateway` login. Apply or upgrade the schema with
+`py -m backend.migrate`. The gateway also applies any missing migration when it starts.
 
 Pick one of the two routes below. Both use the `Dockerfile` in `mandate/`.
 
+## Bundled Postgres
+
+`deploy/docker-compose.yml` runs `postgres:16` next to the gateway. Port 5432 is not published
+on the host. Leave `DATABASE_URL` empty and set `POSTGRES_PASSWORD`, `MANDATE_DB_PASSWORD`
+and `MANDATE_READONLY_PASSWORD`. Compose then connects as
+
+`postgresql://mandate_gateway:<MANDATE_DB_PASSWORD>@postgres:5432/mandate`.
+
+`POSTGRES_PASSWORD` is only the database superuser. The gateway process does not receive it.
+Make each password with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+`MANDATE_DB_PASSWORD` is copied into the gateway URL, so keep it to that alphabet.
+
+Data goes to a named volume. To put it on the VM data disk instead, set
+`MANDATE_PGDATA=/srv/mandate/postgres`, create that directory, and give it to the Postgres
+user in the official image (uid 999):
+
+```bash
+sudo mkdir -p /srv/mandate/postgres
+sudo chown 999:999 /srv/mandate/postgres
+```
+
+The first start creates the database `mandate`, owned by `mandate_gateway`, and a
+`mandate_readonly` login that can only `SELECT`. That login is for a later read-only client
+such as pgweb. It is not the role the gateway uses.
+
+Once Postgres is healthy, compose runs `python -m backend.migrate` as `mandate_gateway`, then
+starts the gateway. The gateway runs any migration that is still missing. Because
+`mandate_gateway` creates the tables, it owns them. That is what the PostgreSQL lockdown
+expects: row-level security is on and public grants are revoked, and the table owner still
+reads and writes. `mandate_readonly` bypasses row-level security because that lockdown has no
+policies and would otherwise return no rows; it has no write grants, and it is only reached
+later by pgweb over IAP.
+
+The server is a 4 GiB VM. Postgres is given `shared_buffers` of 512MB, `work_mem` of 4MB and
+`max_connections` of 40, leaving the rest of the memory for the gateway, the seller and the OS.
+
+To keep an external database, set `DATABASE_URL` to the full URI. The migrate job and the
+gateway use that value and do not replace it. This compose file still starts the local
+Postgres, so the three passwords above are still required. On a managed host that does not use
+this compose file, only `DATABASE_URL` matters (route B).
+
 ## Route A: one VPS (DigitalOcean, Hetzner, Vultr, Lightsail, Azure VM)
 
-You need an Ubuntu 22.04 or 24.04 server with at least 1 GB of RAM, a domain or subdomain for the
-API (for example `api.yourdomain.com`), and SSH access.
+You need an Ubuntu 22.04 or 24.04 server, a domain or subdomain for the API (for example
+`api.mandatepay.tech`), and SSH access. The bundled Postgres wants about 4 GB of RAM on the
+machine. An external database can get by with less.
 
-1. **Point the domain at the server.** Add a DNS `A` record for `api.yourdomain.com` with the
+1. **Point the domain at the server.** Add a DNS `A` record for `api.mandatepay.tech` with the
    server's public IP. Caddy cannot issue the HTTPS certificate until this resolves.
 2. **Install Docker** on the server:
 
@@ -49,10 +92,15 @@ API (for example `api.yourdomain.com`), and SSH access.
    MANDATE_OWNER_TOKEN=<43-character random string>
    MANDATE_SELLER_TOKEN=<a different random string>
    MANDATE_CORS_ORIGINS=https://your-console-domain
-   MANDATE_DOMAIN=api.yourdomain.com
+   MANDATE_DOMAIN=api.mandatepay.tech
+   POSTGRES_PASSWORD=<url-safe random string>
+   MANDATE_DB_PASSWORD=<a different url-safe random string>
+   MANDATE_READONLY_PASSWORD=<a third random string>
    ```
 
-   Make each token with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+   For the bundled database, leave `DATABASE_URL` empty. For an external one, set `DATABASE_URL`
+   to the URI in the example above. Make each token with
+   `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
    Then `chmod 600 .env`.
 6. **Give the gateway the Qatom sign-in.** Run `py -m scripts.qatom_login` on your own machine,
    then copy the token file (`~/.toda-mcp-token.json`) to the server as
@@ -65,8 +113,8 @@ API (for example `api.yourdomain.com`), and SSH access.
    docker compose --env-file ../.env up -d --build
    ```
 
-8. **Check it:** `https://api.yourdomain.com/live` returns `{"live":true}` and
-   `https://api.yourdomain.com/ready` returns `{"ready":true}`.
+8. **Check it:** `https://api.mandatepay.tech/live` returns `{"live":true}` and
+   `https://api.mandatepay.tech/ready` returns `{"ready":true}`.
 
 Updating later: `git pull`, then `docker compose --env-file ../.env up -d --build` again.
 Logs: `docker compose logs -f gateway`. The gateway writes one JSON line per request.
@@ -135,4 +183,5 @@ safe to send. Only containers labelled for Datadog are collected; the seller and
 - `/ready` is green, and a $0.001 live purchase (`scripts.qatom_live`) settles against the hosted
   database with `evidence chain intact: True`.
 - `.env` and the Qatom token are readable only by their owner on the server.
-- The seller port is not reachable from the internet (`curl https://api.yourdomain.com:8001` fails).
+- The seller port is not reachable from the internet (`curl https://api.mandatepay.tech:8001` fails).
+- Postgres is not reachable from the internet either (port 5432 is not published).

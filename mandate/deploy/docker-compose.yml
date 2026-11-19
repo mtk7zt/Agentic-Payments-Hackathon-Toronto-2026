@@ -1,24 +1,88 @@
-# Mandate on one server: HTTPS proxy -> gateway -> seller (seller is never exposed publicly).
+# Mandate on one server: HTTPS proxy -> gateway -> seller, Postgres beside the gateway.
+# The seller and Postgres are never published. See docs/DEPLOY.md.
 #   cd mandate/deploy
 #   docker compose --env-file ../.env up -d --build
 # --env-file ../.env fills the ${...} values below; the gateway also reads the whole file.
-# The seller only ever receives MANDATE_SELLER_TOKEN. See docs/DEPLOY.md.
+# The seller only ever receives MANDATE_SELLER_TOKEN.
 name: mandate
 
 services:
+  postgres:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ../.env}
+      MANDATE_DB_PASSWORD: ${MANDATE_DB_PASSWORD:?set MANDATE_DB_PASSWORD in ../.env}
+      MANDATE_READONLY_PASSWORD: ${MANDATE_READONLY_PASSWORD:?set MANDATE_READONLY_PASSWORD in ../.env}
+    # A share of a 4 GiB VM. Huge pages are off; a small VM often has none.
+    command:
+      - postgres
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - work_mem=4MB
+      - -c
+      - maintenance_work_mem=64MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - max_connections=40
+      - -c
+      - huge_pages=off
+    shm_size: 1gb
+    volumes:
+      # Empty MANDATE_PGDATA selects the named volume. /srv/mandate/postgres puts the files on the data disk.
+      - ${MANDATE_PGDATA:-mandate_pgdata}:/var/lib/postgresql/data
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
+    expose: ["5432"]
+    healthcheck:
+      test: ["CMD", "psql", "-q", "-U", "mandate_gateway", "-d", "mandate", "-c", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  migrate:
+    build: ..
+    image: mandate:latest
+    restart: "no"
+    env_file: ../.env
+    entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
+    command: ["python", "-m", "backend.migrate"]
+    environment:
+      POSTGRES_PASSWORD: ""                    # superuser password stays on the postgres service
+      MANDATE_READONLY_PASSWORD: ""
+    volumes:
+      - ./postgres/with-database.sh:/home/mandate/with-database.sh:ro
+    healthcheck:
+      disable: true                            # the image healthcheck probes the gateway port
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   gateway:
     build: ..
     image: mandate:latest
     restart: unless-stopped
     env_file: ../.env
+    entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
+    # Same command as the image. Setting an entrypoint drops the image command, so it is repeated here.
+    command: ["uvicorn", "backend.api.main:app", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
     environment:
       MANDATE_SELLER_URL: http://seller:8001
       MANDATE_TRUST_PROXY_HEADERS: "1"        # the only way in is through Caddy below
       QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json
+      POSTGRES_PASSWORD: ""                    # superuser password stays on the postgres service
+      MANDATE_READONLY_PASSWORD: ""
     volumes:
       - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
+      - ./postgres/with-database.sh:/home/mandate/with-database.sh:ro
     expose: ["8000"]
-    depends_on: [seller]
+    depends_on:
+      seller:
+        condition: service_started
+      migrate:
+        condition: service_completed_successfully
     labels:
       # Read only by the optional Datadog agent below (profile "monitoring").
       com.datadoghq.ad.logs: '[{"source": "python", "service": "mandate-gateway"}]'
@@ -69,3 +133,4 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  mandate_pgdata:
