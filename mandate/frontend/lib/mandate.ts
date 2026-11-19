@@ -13,7 +13,7 @@
  * one is running.
  */
 import { useSyncExternalStore } from "react";
-import { API_URL, ApiError, api, describe, kindOf, setOwnerCredential, subscribe } from "./api";
+import { ApiError, api, describe, gatewayConfigured, kindOf, setOwnerCredential, subscribe } from "./api";
 import type { ErrorKind, KillSwitchDTO, PurchaseDTO, RailName, SessionKeyDTO, SessionState, StateDTO, WalletDTO } from "./api";
 import * as sim from "./ledger";
 import type { Clause, Evt, EvtType, LedgerEventDTO, Policy, Purchase, ScenarioKey, Stage, State, TxResult } from "./mandate.types";
@@ -52,7 +52,7 @@ let stopStream: (() => void) | null = null;
 /** True while the authenticated event stream is open. Polling keeps running as the fallback. */
 let streaming = false;
 
-let mode: Mode = API_URL ? "connecting" : "simulated";
+let mode: Mode = gatewayConfigured ? "connecting" : "simulated";
 let live: State | null = null;
 let extras: LiveExtras | null = null;
 let notice: Notice | null = null;
@@ -241,7 +241,7 @@ function fallBack(err: unknown) {
   mode = next;
   if (changed) say(kindOf(err) === "auth" ? "auth" : "offline", describe(err));
   else emit();
-  if (API_URL && !retry) retry = setTimeout(() => { retry = null; connect(); }, RETRY_MS);
+  if (gatewayConfigured && !retry) retry = setTimeout(() => { retry = null; connect(); }, RETRY_MS);
 }
 
 async function connect(): Promise<boolean> {
@@ -286,7 +286,7 @@ export async function connectOwner(credential: string): Promise<TxResult> {
 function start() {
   if (started || typeof window === "undefined") return;
   started = true;
-  if (API_URL) connect();
+  if (gatewayConfigured) connect();
 }
 
 /** "Rules changed, reload": drop local edits and take the gateway's current copy. */

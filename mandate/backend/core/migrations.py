@@ -191,6 +191,25 @@ CREATE INDEX IF NOT EXISTS idempotency_keys_expires ON idempotency_keys (expires
                 db.execute(f"REVOKE ALL ON TABLE idempotency_keys FROM {role}")
 
 
+def _v7_console_users(db: Any) -> None:
+    """Who may open the console. The gateway writes this; the browser never does."""
+    t = _types(db)
+    db.script(f"""
+CREATE TABLE IF NOT EXISTS console_users (
+  email TEXT PRIMARY KEY,
+  status TEXT NOT NULL CHECK (status IN ('pending','approved','rejected')),
+  created_at {t['REAL']} NOT NULL,
+  updated_at {t['REAL']} NOT NULL
+);
+""")
+    if db.dialect == "postgresql":
+        db.execute("ALTER TABLE console_users ENABLE ROW LEVEL SECURITY")
+        db.execute("REVOKE ALL ON TABLE console_users FROM PUBLIC")
+        for role in ("anon", "authenticated"):
+            if db.execute("SELECT 1 FROM pg_roles WHERE rolname = ?", (role,)).fetchone():
+                db.execute(f"REVOKE ALL ON TABLE console_users FROM {role}")
+
+
 MIGRATIONS: tuple[Migration, ...] = (
     Migration(1, "base tables and append-only evidence", _v1_base),
     Migration(2, "rail records and approval binding columns", _v2_purchase_columns),
@@ -198,4 +217,5 @@ MIGRATIONS: tuple[Migration, ...] = (
     Migration(4, "checkpoint issue time for ordering", _v4_checkpoint_order),
     Migration(5, "postgres: row-level security on, public grants revoked", _v5_postgres_lockdown),
     Migration(6, "idempotency keys shared by every gateway process", _v6_idempotency_keys),
+    Migration(7, "console users for the signed-in cockpit", _v7_console_users),
 )
