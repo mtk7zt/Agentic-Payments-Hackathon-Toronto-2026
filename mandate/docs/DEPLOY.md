@@ -202,8 +202,9 @@ safe to send. Only containers labelled for Datadog are collected; the seller and
 
 File Browser and Portainer stay off until you pass `--profile admin`. pgweb stays off until
 you pass `--profile dbadmin`. The public Caddy site is unchanged. The admin proxy listens on
-`127.0.0.1:8443` unless `ADMIN_BIND` is the VM's internal IP. Do not set `ADMIN_BIND` to
-`0.0.0.0`.
+`127.0.0.1:8443` by default. `start-iap-tunnel` connects to the VM's internal IP, so a
+listener on `127.0.0.1` is not reachable that way. Set `ADMIN_BIND` to that internal IP,
+for example `10.128.0.2`. Never set `ADMIN_BIND` to `0.0.0.0`.
 
 File Browser is rooted at `/srv/mandate` (or `MANDATE_ADMIN_ROOT`). It has no Docker socket.
 Set `FILEBROWSER_PASSWORD` before the first start. The password is stored then; it is not
