@@ -45,3 +45,41 @@ the script, the hold stays; continue with `--resume <purchase id>`.
 
 Qatom's sign-in may not issue a refresh token. When the saved token expires, run
 `py -m scripts.qatom_login` again.
+
+## On the server
+
+The token lasts about three days. The gateway reads `QATOM_TOKEN_FILE`. It is a file, not an
+environment variable, and it is not baked into the image. Compose mounts
+`deploy/secrets/qatom-token.json` read-only at `/home/mandate/.qatom/token.json` and sets
+`QATOM_TOKEN_FILE` to that path. That host path is gitignored.
+
+Sign in on your laptop with `python -m scripts.qatom_login`. `python -m scripts.qatom_login
+--status` prints `expired` when `expires_at` is past, or `expires in N min`. `--refresh` only
+works when that line says a refresh token was saved. Otherwise sign in again.
+
+Add the new file as a new version of the secret (the name is a placeholder):
+
+```bash
+gcloud secrets versions add mandate-qatom-token --data-file="$HOME/.toda-mcp-token.json"
+```
+
+On the VM, fetch it with the VM's service account and restart the gateway. The script writes
+mode 600 owned by uid 10001, the user in the image, so the container can read the mount.
+Fetch before the first `docker compose up`, or Compose will create a directory where the file
+should be.
+
+```bash
+sudo deploy/secrets/fetch-qatom-token.sh
+cd deploy && docker compose --env-file ../.env restart gateway
+```
+
+A missing file stops the gateway at startup with `Qatom token file not found at ...; run the
+Qatom sign-in once`. A file with no `access_token` stops it with `Qatom token file has no
+access_token`. An expired token that is still in the file is not noticed at startup. The next
+checkout fails the HTTP call and is recorded as UNKNOWN with error `HTTPStatusError`.
+
+A calendar reminder every two days is enough. `--status` only reads the file.
+
+The VM needs outbound HTTPS on port 443 to `mcp.m.todaq.net`. GCP allows that by default.
+Sign-in also calls the authorization host that server points at, still on 443. The adapter
+has no host allowlist.

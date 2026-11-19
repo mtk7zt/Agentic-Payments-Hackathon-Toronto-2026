@@ -44,7 +44,7 @@ services:
 
   migrate:
     build: ..
-    image: mandate:latest
+    image: ${MANDATE_IMAGE:-mandate:latest}
     restart: "no"
     env_file: ../.env
     entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
@@ -62,7 +62,8 @@ services:
 
   gateway:
     build: ..
-    image: mandate:latest
+    # Empty MANDATE_IMAGE keeps this local name. A deploy sets the registry image.
+    image: ${MANDATE_IMAGE:-mandate:latest}
     restart: unless-stopped
     env_file: ../.env
     entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
@@ -71,10 +72,11 @@ services:
     environment:
       MANDATE_SELLER_URL: http://seller:8001
       MANDATE_TRUST_PROXY_HEADERS: "1"        # the only way in is through Caddy below
-      QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json
+      QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json   # file mount, never an environment secret
       POSTGRES_PASSWORD: ""                    # superuser password stays on the postgres service
       MANDATE_READONLY_PASSWORD: ""
     volumes:
+      # Host file is uid 10001 (the image user) and mode 600. See deploy/secrets/fetch-qatom-token.sh.
       - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
       - ./postgres/with-database.sh:/home/mandate/with-database.sh:ro
     expose: ["8000"]
@@ -89,7 +91,7 @@ services:
       com.datadoghq.ad.checks: '{"http_check": {"instances": [{"name": "mandate-ready", "url": "http://%%host%%:8000/ready", "timeout": 5}]}}'
 
   seller:
-    image: mandate:latest
+    image: ${MANDATE_IMAGE:-mandate:latest}
     restart: unless-stopped
     command: ["uvicorn", "backend.seller_api.main:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:
@@ -109,6 +111,63 @@ services:
       - caddy_data:/data
       - caddy_config:/config
     depends_on: [gateway]
+
+  # Profile "admin". Off until --profile admin. Nothing here is published on 0.0.0.0.
+  filebrowser:
+    image: filebrowser/filebrowser:v2.32.0
+    profiles: ["admin"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/filebrowser-start.sh"]
+    environment:
+      FILEBROWSER_PASSWORD: ${FILEBROWSER_PASSWORD:-}
+    volumes:
+      - ${MANDATE_ADMIN_ROOT:-/srv/mandate}:/srv/mandate
+      - filebrowser_data:/database
+      - ./admin/filebrowser.sh:/filebrowser-start.sh:ro
+    expose: ["80"]
+
+  # The Docker socket makes this root-equivalent. Reach it only through IAP.
+  portainer:
+    image: portainer/portainer-ce:2.27.9
+    profiles: ["admin"]
+    restart: unless-stopped
+    command:
+      - --bind=:9000
+      - --http-enabled
+      - --base-url=/portainer
+      - --trusted-origins=${PORTAINER_TRUSTED_ORIGINS:-http://127.0.0.1:8443}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    expose: ["9000"]
+
+  # Profile "dbadmin". Start it, use it, stop it. Read-only database role.
+  pgweb:
+    image: sosedoff/pgweb:0.16.2
+    profiles: ["dbadmin"]
+    restart: "no"
+    command:
+      - --bind=0.0.0.0
+      - --listen=8081
+      - --prefix=pgweb
+      - --url=postgresql://mandate_readonly:${MANDATE_READONLY_PASSWORD}@postgres:5432/mandate?sslmode=disable
+      - --readonly
+      - --lock-session
+      - --skip-open
+    expose: ["8081"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy-admin:
+    image: caddy:2
+    profiles: ["admin", "dbadmin"]
+    restart: unless-stopped
+    ports: ["${ADMIN_BIND:-127.0.0.1}:8443:8443"]
+    volumes:
+      - ./Caddyfile.admin:/etc/caddy/Caddyfile:ro
+      - caddy_admin_data:/data
+      - caddy_admin_config:/config
 
   # Optional monitoring: docker compose --env-file ../.env --profile monitoring up -d
   # Needs DD_API_KEY (and DD_SITE if not datadoghq.com) in ../.env. Collects the gateway's JSON logs,
@@ -133,4 +192,8 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  caddy_admin_data:
+  caddy_admin_config:
   mandate_pgdata:
+  filebrowser_data:
+  portainer_data:

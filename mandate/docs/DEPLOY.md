@@ -129,10 +129,11 @@ machine. An external database can get by with less.
    Later it can be `https://app.mandatepay.tech,https://market.mandatepay.tech`.
    Make each token with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
    Then `chmod 600 .env`.
-6. **Give the gateway the Qatom sign-in.** Run `py -m scripts.qatom_login` on your own machine,
-   then copy the token file (`~/.toda-mcp-token.json`) to the server as
-   `mandate/deploy/secrets/qatom-token.json` and `chmod 600` it. The `secrets/` folder is ignored
-   by git. The token lasts about 3 days; repeat this step when it expires.
+6. **Give the gateway the Qatom sign-in.** Sign in on your own machine (`docs/rails/QATOM.md`),
+   add that file as a version of the secret `mandate-qatom-token`, then on the VM run
+   `sudo deploy/secrets/fetch-qatom-token.sh` before `docker compose up`. The token is a file,
+   never an environment value, and `deploy/secrets/` stays out of git. Renewal is in that same
+   doc. The VM needs outbound HTTPS on port 443 to `mcp.m.todaq.net` (allowed by default).
 7. **Start everything:**
 
    ```bash
@@ -197,6 +198,91 @@ Watching them needs a log line per evidence event, which is a separate change.
 Logs never contain tokens, headers or request bodies (see `docs/OPERATIONS.md`), so they are
 safe to send. Only containers labelled for Datadog are collected; the seller and Caddy are not.
 
+## Admin access
+
+File Browser and Portainer stay off until you pass `--profile admin`. pgweb stays off until
+you pass `--profile dbadmin`. The public Caddy site is unchanged. The admin proxy listens on
+`127.0.0.1:8443` unless `ADMIN_BIND` is the VM's internal IP. Do not set `ADMIN_BIND` to
+`0.0.0.0`.
+
+File Browser is rooted at `/srv/mandate` (or `MANDATE_ADMIN_ROOT`). It has no Docker socket.
+Set `FILEBROWSER_PASSWORD` before the first start. The password is stored then; it is not
+`admin`. Portainer has the Docker socket, so it is root-equivalent. It asks you to create
+the admin user on first visit. There is no default password. pgweb connects as
+`mandate_readonly` and should be stopped when you are finished. Keep that password URL-safe;
+it is placed in the connection string.
+
+```bash
+cd deploy
+docker compose --env-file ../.env --profile admin up -d
+docker compose --env-file ../.env stop filebrowser portainer caddy-admin
+
+docker compose --env-file ../.env --profile dbadmin up -d
+docker compose --env-file ../.env stop pgweb caddy-admin
+```
+
+Cockpit is installed on the host, not in Compose. The script does not open the firewall:
+
+```bash
+sudo COCKPIT_BIND=127.0.0.1 deploy/host/install-cockpit.sh
+sudo systemctl stop cockpit.socket
+```
+
+Reach these through IAP, not the public address. The firewall should allow `35.235.240.0/20`
+only on ports 22, 8443 and 9090.
+
+```bash
+gcloud compute start-iap-tunnel mandate-prod 8443 --local-host-port=localhost:8443 --zone=us-central1-a
+gcloud compute start-iap-tunnel mandate-prod 9090 --local-host-port=localhost:9090 --zone=us-central1-a
+gcloud compute ssh mandate-prod --tunnel-through-iap --zone=us-central1-a
+```
+
+Then open `http://127.0.0.1:8443/files`, `http://127.0.0.1:8443/portainer`, and, while pgweb
+is running, `http://127.0.0.1:8443/pgweb`. Cockpit is `https://127.0.0.1:9090`.
+
+## Deploy from GitHub
+
+`.github/workflows/deploy.yml` runs on a push to `main` and when someone starts it by hand.
+It does not run on a pull request. The job uses the `production` environment. It skips itself,
+and the run stays green, until these repository variables are set (`vars`, not secrets):
+
+| Variable | What it is |
+| --- | --- |
+| `GCP_PROJECT_ID` | Google Cloud project id |
+| `GCP_WIF_PROVIDER` | Full Workload Identity provider name |
+| `GCP_DEPLOY_SA` | Deploy service account email |
+| `GCE_INSTANCE` | VM name, `mandate-prod` |
+| `GCE_ZONE` | VM zone, for example `us-central1-a` |
+| `GCE_DEPLOY_DIR` | Optional. Checkout on the VM. Default `/srv/mandate/app` |
+| `GAR_LOCATION` | Artifact Registry region, for example `us-central1` |
+| `GAR_REPOSITORY` | Artifact Registry repository name |
+
+The Workload Identity provider must allow only this repository on `main`:
+
+```
+assertion.repository == 'mtk7zt/Agentic-Payments-Hackathon-Toronto-2026' && assertion.ref == 'refs/heads/main'
+```
+
+The deploy account (`mandate-deploy`) needs `roles/compute.instanceAdmin.v1` or
+`roles/compute.osAdminLogin`, plus `roles/iap.tunnelResourceAccessor`,
+`roles/iam.serviceAccountUser` on the VM's runtime service account, and
+`roles/artifactregistry.writer`. The VM's runtime service account needs
+`roles/artifactregistry.reader` so it can pull the image. No service-account key is stored
+in the repo or in Actions secrets. The workflow does not set
+`NEXT_PUBLIC_MANDATE_OWNER_TOKEN` and does not print the server's `.env`.
+
+The job builds `mandate/Dockerfile` and pushes
+`<location>-docker.pkg.dev/<project>/<repository>/mandate` with the commit SHA and `latest`.
+The server must already have a git checkout at `GCE_DEPLOY_DIR`, passwordless `sudo` or a
+user that can run Docker, and the production `.env`. Over IAP SSH the job checks out that
+commit and runs `docker compose pull && docker compose up -d` for the default profile only.
+`MANDATE_IMAGE` points at the SHA tag. An empty `MANDATE_IMAGE` still builds locally as
+`mandate:latest`. The compose file runs the migrate one-shot, and the job waits until
+`/ready` succeeds.
+
+To roll back, start the workflow on `main` and pass the older commit as `sha`, or re-run an
+earlier successful deploy. The server checks out that commit and brings the stack up again.
+
 ## Scaling and limits
 
 - Run **one gateway process** for now. Idempotency is shared through the database, but the rate
@@ -213,3 +299,4 @@ safe to send. Only containers labelled for Datadog are collected; the seller and
 - `.env` and the Qatom token are readable only by their owner on the server.
 - The seller port is not reachable from the internet (`curl https://api.mandatepay.tech:8001` fails).
 - Postgres is not reachable from the internet either (port 5432 is not published).
+- Ports 8443 and 9090 are not reachable on the public address.
