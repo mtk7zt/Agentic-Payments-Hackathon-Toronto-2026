@@ -40,7 +40,16 @@
 import type { BackendPolicyClause, BackendPurchaseStage, LedgerEventDTO, PurchaseRequestDTO } from "./mandate.types";
 export type { LedgerEventDTO } from "./mandate.types";
 
-export const API_URL = (process.env.NEXT_PUBLIC_MANDATE_API_URL ?? "").replace(/\/$/, "");
+/**
+ * Deployed builds talk to this app's own proxy, not the gateway. The gateway's
+ * stream cookie is SameSite=Strict and Path=/api on the gateway host, so the
+ * browser would not send it to the console. The proxy checks the sign-in
+ * session and adds the owner token. If that stream drops, the cockpit keeps
+ * polling, which it already did.
+ */
+export const USES_PROXY = process.env.NEXT_PUBLIC_MANDATE_PROXY === "1";
+export const API_URL = USES_PROXY ? "" : (process.env.NEXT_PUBLIC_MANDATE_API_URL ?? "").replace(/\/$/, "");
+export const gatewayConfigured = USES_PROXY || API_URL.length > 0;
 /** Dev-only. See the note at the top of this file and frontend/.env.example. */
 const DEV_OWNER_TOKEN = process.env.NEXT_PUBLIC_MANDATE_OWNER_TOKEN ?? "";
 let ownerCredential = "";
@@ -314,7 +323,7 @@ export const api = {
  */
 export function subscribe(onEvent: (e: LedgerEventDTO) => void, onStatus?: (s: "open" | "stale") => void,
   onReset?: () => void): () => void {
-  if (!API_URL || typeof EventSource === "undefined") return () => {};
+  if (!gatewayConfigured || typeof EventSource === "undefined") return () => {};
   let stopped = false;
   let cursor = 0;
   let es: EventSource | null = null;

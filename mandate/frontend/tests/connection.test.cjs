@@ -16,7 +16,7 @@ function model() {
     strict_whitelist: true, whitelisted_sellers: {}, max_attempts: 2, paused: false, hash: "policy" },
     purchases: [], balances: { budget: 5000, held: 40, settled: 60 }, session_keys: [] };
   const sim = { getState: () => ({ held: -1 }), subscribeLedger: () => () => {}, run: () => ({ ok: true }) };
-  const api = { API_URL: "http://localhost:8000", ApiError,
+  const api = { API_URL: "http://localhost:8000", gatewayConfigured: true, ApiError,
     kindOf: (e) => (e instanceof ApiError ? e.kind : "offline"), describe: (e) => String(e && e.message),
     setOwnerCredential: (v) => c.credentials.push(v),
     api: { state: async () => { if (c.fail) throw c.fail; return structuredClone(fixture); }, wallet: async () => null },

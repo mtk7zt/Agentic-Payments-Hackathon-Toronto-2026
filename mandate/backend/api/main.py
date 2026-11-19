@@ -29,7 +29,7 @@ from ..models.purchase import PurchaseIn
 from ..services import orchestrator
 from ..services.payment_rail import rail_from_env
 from ..services.seller import seller_from_env
-from . import ops
+from . import console_users, ops
 from .streams import GRANT_SECONDS, mint_grant, read_grant, stream_frames
 
 # Seeded into an empty whitelist in sandbox mode only.
@@ -124,6 +124,10 @@ class SessionChange(Strict):
 
 class CheckpointVerification(Strict):
     checkpoint: dict[str, Any]
+
+
+class ConsoleUserIn(Strict):
+    email: str = Field(min_length=3, max_length=254)
 
 
 def owner(x_owner_token: str | None = Header(default=None)) -> None:
@@ -396,6 +400,40 @@ async def stream(request: Request, last_event_id: str | None = Header(default=No
         return time.time() < expires and os.environ.get("MANDATE_OWNER_TOKEN") == secret
     return StreamingResponse(stream_frames(request, ledger, after_seq, valid), media_type="text/event-stream",
                              headers={"Cache-Control": "no-store", "X-Accel-Buffering": "no"})
+
+
+def _console_email(value: str) -> str:
+    try:
+        return console_users.normalize_email(value)
+    except ValueError as exc:
+        raise HTTPException(422, str(exc)) from exc
+
+
+@app.post("/api/v1/console-users", dependencies=[Depends(owner)])
+def register_console_user(body: ConsoleUserIn) -> dict[str, Any]:
+    """Create the address as pending, or return the row that is already there."""
+    return console_users.register_or_get(ledger, _console_email(body.email))
+
+
+@app.get("/api/v1/console-users", dependencies=[Depends(owner)])
+def list_console_users() -> dict[str, Any]:
+    return {"users": console_users.list_users(ledger)}
+
+
+@app.post("/api/v1/console-users/{email}/approve", dependencies=[Depends(owner)])
+def approve_console_user(email: str) -> dict[str, Any]:
+    row = console_users.set_status(ledger, _console_email(email), "approved")
+    if row is None:
+        raise HTTPException(404, "console user not found")
+    return row
+
+
+@app.post("/api/v1/console-users/{email}/reject", dependencies=[Depends(owner)])
+def reject_console_user(email: str) -> dict[str, Any]:
+    row = console_users.set_status(ledger, _console_email(email), "rejected")
+    if row is None:
+        raise HTTPException(404, "console user not found")
+    return row
 
 
 @app.get("/api/v1/wallet", dependencies=[Depends(owner)])

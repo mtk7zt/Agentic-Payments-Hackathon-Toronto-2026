@@ -13,7 +13,7 @@ function model() {
   const writes = [];
   let conflict = false;
   const react = { useSyncExternalStore: (subscribe, snapshot) => { subscribe(() => {}); return snapshot(); } };
-  const api = { API_URL: "http://localhost:8000", ApiError: Error, kindOf: (e) => /version/.test(String(e && e.message)) ? "conflict" : "network", describe: (e) => String(e && e.message || e), api: {
+  const api = { API_URL: "http://localhost:8000", gatewayConfigured: true, ApiError: Error, kindOf: (e) => /version/.test(String(e && e.message)) ? "conflict" : "network", describe: (e) => String(e && e.message || e), api: {
     health: async () => ({ status: "ok", rail: "mock" }),
     state: async () => structuredClone(state),
     wallet: async () => null,

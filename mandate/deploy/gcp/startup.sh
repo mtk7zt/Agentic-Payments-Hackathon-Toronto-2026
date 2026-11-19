@@ -134,7 +134,7 @@ render_env() {
   printf '%s' 'qatom' > "${stage}/MANDATE_RAIL"
   printf '%s' 'http' > "${stage}/MANDATE_SELLER_MODE"
   printf '%s' 'http://seller:8001' > "${stage}/MANDATE_SELLER_URL"
-  printf '%s' 'http://localhost:3000' > "${stage}/MANDATE_CORS_ORIGINS"
+  printf '%s' 'https://app.mandatepay.tech' > "${stage}/MANDATE_CORS_ORIGINS"
   printf '%s' 'api.mandatepay.tech' > "${stage}/MANDATE_DOMAIN"
   printf '%s' '/srv/mandate/postgres' > "${stage}/MANDATE_PGDATA"
   printf '%s' 'https://mcp.m.todaq.net/mcp' > "${stage}/QATOM_MCP_URL"

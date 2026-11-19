@@ -125,8 +125,8 @@ machine. An external database can get by with less.
    For the bundled database, leave `DATABASE_URL` empty. For an external one, set `DATABASE_URL`
    to the URI in the example above. `MANDATE_CORS_ORIGINS` is a comma-separated list of exact
    origins. Spaces around the commas are ignored, and so are empty entries. One origin still
-   works. `*` is refused. Leave the value at `http://localhost:3000` until the console exists.
-   Later it can be `https://app.mandatepay.tech,https://market.mandatepay.tech`.
+   works. `*` is refused. Local development can stay on `http://localhost:3000`.
+   The production console origin is `https://app.mandatepay.tech`.
    Make each token with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
    Then `chmod 600 .env`.
 6. **Give the gateway the Qatom sign-in.** Sign in on your own machine (`docs/rails/QATOM.md`),
@@ -350,6 +350,43 @@ commit as root and runs `docker compose pull && docker compose up -d` for the de
 To roll back, start the workflow on `main` and pass the older commit as `sha`, or re-run an
 earlier successful deploy. The server checks out that commit and brings the stack up again.
 
+## Console on Vercel
+
+The cockpit in `mandate/frontend` is a Vercel project. Set the project root directory to
+`mandate/frontend`. The hostname is `app.mandatepay.tech`. Add the domain on Vercel's domain
+screen, then copy the record Vercel shows into GoDaddy. Do not guess the address.
+
+Set these on Vercel. They stay on the server. next-auth v4 needs `NEXTAUTH_URL` and
+`NEXTAUTH_SECRET` in production. Do not set `NEXT_PUBLIC_MANDATE_OWNER_TOKEN`.
+A production or preview build fails if that name is set.
+
+| Name | Where |
+| --- | --- |
+| `NEXTAUTH_URL` | Vercel. `https://app.mandatepay.tech` |
+| `NEXTAUTH_SECRET` | Vercel |
+| `GOOGLE_CLIENT_ID` | Vercel |
+| `GOOGLE_CLIENT_SECRET` | Vercel |
+| `MANDATE_CONSOLE_OWNER_EMAIL` | Vercel. The owner's Google address. A placeholder in `.env.example` only. |
+| `MANDATE_API_URL` | Vercel. `https://api.mandatepay.tech` |
+| `MANDATE_OWNER_TOKEN` | Vercel, the same value as on the VM. Server only. |
+| `MANDATE_CORS_ORIGINS` | VM `.env`. `https://app.mandatepay.tech` |
+| `NEXT_PUBLIC_MANDATE_API_URL` | Leave unset on Vercel. Local development only. |
+| `NEXT_PUBLIC_MANDATE_OWNER_TOKEN` | Leave unset. Local development only. |
+
+In the Google OAuth client, the redirect URI is
+`https://app.mandatepay.tech/api/auth/callback/google`.
+
+The VM startup script writes `MANDATE_CORS_ORIGINS=https://app.mandatepay.tech` on the next
+boot. To change a machine that is already up:
+
+```bash
+sudo sed -i 's|^MANDATE_CORS_ORIGINS=.*|MANDATE_CORS_ORIGINS=https://app.mandatepay.tech|' /srv/mandate/app/mandate/.env
+cd /srv/mandate/app/mandate/deploy && sudo docker compose --env-file ../.env up -d --force-recreate gateway
+```
+
+Sign-in is at `/signin`. Accounts that are not approved stay on `/pending`. The owner opens
+`/approvals`.
+
 ## Scaling and limits
 
 - Run **one gateway process** for now. Idempotency is shared through the database, but the rate
@@ -357,7 +394,8 @@ earlier successful deploy. The server checks out that commit and brings the stac
 - The ledger serialises writes with a PostgreSQL advisory lock, so a second replica is safe for
   correctness when you do add one.
 - Keep `MANDATE_CORS_ORIGINS` to exact origins, separated by commas. `*` is refused at start-up.
-  Until the console exists, leave the list at `http://localhost:3000`.
+  The production console origin is `https://app.mandatepay.tech`. Local development can stay on
+  `http://localhost:3000`.
 
 ## Before calling a deployment done
 
