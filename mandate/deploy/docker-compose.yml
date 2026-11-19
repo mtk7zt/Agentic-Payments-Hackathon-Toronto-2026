@@ -44,7 +44,7 @@ services:
 
   migrate:
     build: ..
-    image: mandate:latest
+    image: ${MANDATE_IMAGE:-mandate:latest}
     restart: "no"
     env_file: ../.env
     entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
@@ -62,7 +62,8 @@ services:
 
   gateway:
     build: ..
-    image: mandate:latest
+    # Empty MANDATE_IMAGE keeps this local name. A deploy sets the registry image.
+    image: ${MANDATE_IMAGE:-mandate:latest}
     restart: unless-stopped
     env_file: ../.env
     entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
@@ -90,7 +91,7 @@ services:
       com.datadoghq.ad.checks: '{"http_check": {"instances": [{"name": "mandate-ready", "url": "http://%%host%%:8000/ready", "timeout": 5}]}}'
 
   seller:
-    image: mandate:latest
+    image: ${MANDATE_IMAGE:-mandate:latest}
     restart: unless-stopped
     command: ["uvicorn", "backend.seller_api.main:app", "--host", "0.0.0.0", "--port", "8001"]
     environment:

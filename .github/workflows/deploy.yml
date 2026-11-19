@@ -33,7 +33,9 @@ jobs:
       vars.GCP_WIF_PROVIDER != '' &&
       vars.GCP_DEPLOY_SA != '' &&
       vars.GCE_INSTANCE != '' &&
-      vars.GCE_ZONE != ''
+      vars.GCE_ZONE != '' &&
+      vars.GAR_LOCATION != '' &&
+      vars.GAR_REPOSITORY != ''
     steps:
       - uses: actions/checkout@v4
         with:
@@ -53,7 +55,8 @@ jobs:
           GCE_INSTANCE: ${{ vars.GCE_INSTANCE }}
           GCE_ZONE: ${{ vars.GCE_ZONE }}
           GCE_DEPLOY_DIR: ${{ vars.GCE_DEPLOY_DIR }}
-          GCP_AR_HOST: ${{ vars.GCP_AR_HOST }}
+          GAR_LOCATION: ${{ vars.GAR_LOCATION }}
+          GAR_REPOSITORY: ${{ vars.GAR_REPOSITORY }}
           DEPLOY_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sha || github.sha }}
         run: |
           set -euo pipefail
@@ -68,10 +71,24 @@ jobs:
               exit 1
               ;;
           esac
+          case "${GAR_LOCATION}${GCP_PROJECT_ID}${GAR_REPOSITORY}" in
+            *[!A-Za-z0-9._-]*)
+              echo "refusing an unsafe registry name" >&2
+              exit 1
+              ;;
+          esac
+          image="${GAR_LOCATION}-docker.pkg.dev/${GCP_PROJECT_ID}/${GAR_REPOSITORY}/mandate"
           export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+          gcloud auth configure-docker "${GAR_LOCATION}-docker.pkg.dev" --quiet
+          docker build -f mandate/Dockerfile \
+            -t "${image}:${DEPLOY_SHA}" \
+            -t "${image}:latest" \
+            mandate
+          docker push "${image}:${DEPLOY_SHA}"
+          docker push "${image}:latest"
           # Values are quoted for the remote shell. Nothing secret is passed.
-          remote=$(printf 'set -euo pipefail; cd %q; git fetch --force origin %q; git checkout --detach %q; GCP_AR_HOST=%q bash mandate/deploy/remote-up.sh' \
-            "$dir" "$DEPLOY_SHA" "$DEPLOY_SHA" "$GCP_AR_HOST")
+          remote=$(printf 'set -euo pipefail; cd %q; git fetch --force origin %q; git checkout --detach %q; MANDATE_IMAGE=%q bash mandate/deploy/remote-up.sh' \
+            "$dir" "$DEPLOY_SHA" "$DEPLOY_SHA" "${image}:${DEPLOY_SHA}")
           gcloud compute ssh "$GCE_INSTANCE" \
             --project="$GCP_PROJECT_ID" \
             --zone="$GCE_ZONE" \

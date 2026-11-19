@@ -254,7 +254,8 @@ and the run stays green, until these repository variables are set (`vars`, not s
 | `GCE_INSTANCE` | VM name, `mandate-prod` |
 | `GCE_ZONE` | VM zone, for example `us-central1-a` |
 | `GCE_DEPLOY_DIR` | Optional. Checkout on the VM. Default `/srv/mandate/app` |
-| `GCP_AR_HOST` | Optional Artifact Registry host, for example `us-central1-docker.pkg.dev` |
+| `GAR_LOCATION` | Artifact Registry region, for example `us-central1` |
+| `GAR_REPOSITORY` | Artifact Registry repository name |
 
 The Workload Identity provider must allow only this repository on `main`:
 
@@ -263,16 +264,21 @@ assertion.repository == 'mtk7zt/Agentic-Payments-Hackathon-Toronto-2026' && asse
 ```
 
 The deploy account (`mandate-deploy`) needs `roles/compute.instanceAdmin.v1` or
-`roles/compute.osAdminLogin`, plus `roles/iap.tunnelResourceAccessor`, and
-`roles/iam.serviceAccountUser` on the VM's runtime service account. It does not use a JSON
-key. The workflow does not set `NEXT_PUBLIC_MANDATE_OWNER_TOKEN` and does not print the
-server's `.env`.
+`roles/compute.osAdminLogin`, plus `roles/iap.tunnelResourceAccessor`,
+`roles/iam.serviceAccountUser` on the VM's runtime service account, and
+`roles/artifactregistry.writer`. The VM's runtime service account needs
+`roles/artifactregistry.reader` so it can pull the image. No service-account key is stored
+in the repo or in Actions secrets. The workflow does not set
+`NEXT_PUBLIC_MANDATE_OWNER_TOKEN` and does not print the server's `.env`.
 
+The job builds `mandate/Dockerfile` and pushes
+`<location>-docker.pkg.dev/<project>/<repository>/mandate` with the commit SHA and `latest`.
 The server must already have a git checkout at `GCE_DEPLOY_DIR`, passwordless `sudo` or a
-user that can run Docker, and the production `.env`. The job checks out the pushed commit,
-then `docker compose up -d --build` for the default profile only. That runs the migrate
-one-shot already in the compose file and waits until `/ready` succeeds. If `GCP_AR_HOST` is
-set, the server also configures Docker for that registry before the build.
+user that can run Docker, and the production `.env`. Over IAP SSH the job checks out that
+commit and runs `docker compose pull && docker compose up -d` for the default profile only.
+`MANDATE_IMAGE` points at the SHA tag. An empty `MANDATE_IMAGE` still builds locally as
+`mandate:latest`. The compose file runs the migrate one-shot, and the job waits until
+`/ready` succeeds.
 
 To roll back, start the workflow on `main` and pass the older commit as `sha`, or re-run an
 earlier successful deploy. The server checks out that commit and brings the stack up again.
