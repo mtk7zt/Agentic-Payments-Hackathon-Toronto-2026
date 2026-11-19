@@ -148,7 +148,7 @@ services:
     command:
       - --bind=0.0.0.0
       - --listen=8081
-      - --prefix=/pgweb
+      - --prefix=pgweb
       - --url=postgresql://mandate_readonly:${MANDATE_READONLY_PASSWORD}@postgres:5432/mandate?sslmode=disable
       - --readonly
       - --lock-session
