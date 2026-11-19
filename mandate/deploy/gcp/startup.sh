@@ -371,10 +371,9 @@ prepare_checkout() {
   if [ ! -d "${APP_DIR}/.git" ]; then
     git clone "$REPO_URL" "$APP_DIR"
   fi
-  # The deploy account's OS Login user is in google-sudoers and runs git here
-  # without sudo. remote-up.sh uses sudo docker when that user is not in the
-  # docker group. safe.directory is required because the checkout is not owned
-  # by the login user.
+  # OS Login does not add the deploy account to google-sudoers, so that user
+  # cannot write this checkout. The deploy workflow runs the remote step with
+  # sudo. safe.directory is system-wide so root can use git here.
   chgrp -R google-sudoers "$APP_DIR"
   chmod -R g+rwX "$APP_DIR"
   find "$APP_DIR" -type d -exec chmod g+s {} +

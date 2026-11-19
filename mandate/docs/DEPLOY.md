@@ -264,9 +264,8 @@ above: host `api`, value that IP.
 On every boot the startup script formats the data disk only when it has no filesystem,
 mounts it at `/srv/mandate` by UUID, adds a 2 GB swap file, installs Docker Engine and
 the Compose plugin from Docker's apt repository, and clones this repo to
-`/srv/mandate/app` if that checkout is missing. OS Login users in `google-sudoers`
-can update that checkout. `remote-up.sh` uses `sudo docker` when the login user is
-not in the `docker` group.
+`/srv/mandate/app` if that checkout is missing. The OS Login user is not in
+`google-sudoers`, so the deploy workflow runs the remote step with sudo.
 
 It writes `/srv/mandate/app/mandate/.env` mode 600 from Secret Manager, using the
 runtime service account. A secret still set to `placeholder-change-me` is skipped.
@@ -338,9 +337,9 @@ in the repo or in Actions secrets. The workflow does not set
 
 The job builds `mandate/Dockerfile` and pushes
 `<location>-docker.pkg.dev/<project>/<repository>/mandate` with the commit SHA and `latest`.
-The server must already have a git checkout at `GCE_DEPLOY_DIR`, passwordless `sudo` or a
-user that can run Docker, and the production `.env`. Over IAP SSH the job checks out that
-commit and runs `docker compose pull && docker compose up -d` for the default profile only.
+The server must already have a git checkout at `GCE_DEPLOY_DIR` and the production
+`.env`. Over IAP SSH the job runs the remote step with sudo: it checks out that
+commit as root and runs `docker compose pull && docker compose up -d` for the default profile only.
 `MANDATE_IMAGE` points at the SHA tag. An empty `MANDATE_IMAGE` still builds locally as
 `mandate:latest`. The compose file runs the migrate one-shot, and the job waits until
 `/ready` succeeds.
