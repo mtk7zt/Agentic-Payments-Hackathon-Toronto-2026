@@ -71,10 +71,11 @@ services:
     environment:
       MANDATE_SELLER_URL: http://seller:8001
       MANDATE_TRUST_PROXY_HEADERS: "1"        # the only way in is through Caddy below
-      QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json
+      QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json   # file mount, never an environment secret
       POSTGRES_PASSWORD: ""                    # superuser password stays on the postgres service
       MANDATE_READONLY_PASSWORD: ""
     volumes:
+      # Host file is uid 10001 (the image user) and mode 600. See deploy/secrets/fetch-qatom-token.sh.
       - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
       - ./postgres/with-database.sh:/home/mandate/with-database.sh:ro
     expose: ["8000"]
