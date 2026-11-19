@@ -1,0 +1,11 @@
+[Unit]
+Description=Nightly Mandate Postgres backup at 03:00 America/Toronto
+
+[Timer]
+# 03:00 in the VM's local timezone. The install note sets that to America/Toronto.
+OnCalendar=*-*-* 03:00:00
+Persistent=true
+Unit=mandate-backup.service
+
+[Install]
+WantedBy=timers.target
