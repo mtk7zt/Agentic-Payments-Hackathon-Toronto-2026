@@ -111,6 +111,63 @@ services:
       - caddy_config:/config
     depends_on: [gateway]
 
+  # Profile "admin". Off until --profile admin. Nothing here is published on 0.0.0.0.
+  filebrowser:
+    image: filebrowser/filebrowser:v2.32.0
+    profiles: ["admin"]
+    restart: unless-stopped
+    entrypoint: ["/bin/sh", "/filebrowser-start.sh"]
+    environment:
+      FILEBROWSER_PASSWORD: ${FILEBROWSER_PASSWORD:-}
+    volumes:
+      - ${MANDATE_ADMIN_ROOT:-/srv/mandate}:/srv/mandate
+      - filebrowser_data:/database
+      - ./admin/filebrowser.sh:/filebrowser-start.sh:ro
+    expose: ["80"]
+
+  # The Docker socket makes this root-equivalent. Reach it only through IAP.
+  portainer:
+    image: portainer/portainer-ce:2.27.9
+    profiles: ["admin"]
+    restart: unless-stopped
+    command:
+      - --bind=:9000
+      - --http-enabled
+      - --base-url=/portainer
+      - --trusted-origins=${PORTAINER_TRUSTED_ORIGINS:-http://127.0.0.1:8443}
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - portainer_data:/data
+    expose: ["9000"]
+
+  # Profile "dbadmin". Start it, use it, stop it. Read-only database role.
+  pgweb:
+    image: sosedoff/pgweb:0.16.2
+    profiles: ["dbadmin"]
+    restart: "no"
+    command:
+      - --bind=0.0.0.0
+      - --listen=8081
+      - --prefix=pgweb
+      - --url=postgresql://mandate_readonly:${MANDATE_READONLY_PASSWORD}@postgres:5432/mandate?sslmode=disable
+      - --readonly
+      - --lock-session
+      - --skip-open
+    expose: ["8081"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  caddy-admin:
+    image: caddy:2
+    profiles: ["admin", "dbadmin"]
+    restart: unless-stopped
+    ports: ["${ADMIN_BIND:-127.0.0.1}:8443:8443"]
+    volumes:
+      - ./Caddyfile.admin:/etc/caddy/Caddyfile:ro
+      - caddy_admin_data:/data
+      - caddy_admin_config:/config
+
   # Optional monitoring: docker compose --env-file ../.env --profile monitoring up -d
   # Needs DD_API_KEY (and DD_SITE if not datadoghq.com) in ../.env. Collects the gateway's JSON logs,
   # container metrics and a /ready check every 15 seconds. Nothing is sent unless this profile is on.
@@ -134,4 +191,8 @@ services:
 volumes:
   caddy_data:
   caddy_config:
+  caddy_admin_data:
+  caddy_admin_config:
   mandate_pgdata:
+  filebrowser_data:
+  portainer_data:

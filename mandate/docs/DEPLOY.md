@@ -198,6 +198,48 @@ Watching them needs a log line per evidence event, which is a separate change.
 Logs never contain tokens, headers or request bodies (see `docs/OPERATIONS.md`), so they are
 safe to send. Only containers labelled for Datadog are collected; the seller and Caddy are not.
 
+## Admin access
+
+File Browser and Portainer stay off until you pass `--profile admin`. pgweb stays off until
+you pass `--profile dbadmin`. The public Caddy site is unchanged. The admin proxy listens on
+`127.0.0.1:8443` unless `ADMIN_BIND` is the VM's internal IP. Do not set `ADMIN_BIND` to
+`0.0.0.0`.
+
+File Browser is rooted at `/srv/mandate` (or `MANDATE_ADMIN_ROOT`). It has no Docker socket.
+Set `FILEBROWSER_PASSWORD` before the first start. The password is stored then; it is not
+`admin`. Portainer has the Docker socket, so it is root-equivalent. It asks you to create
+the admin user on first visit. There is no default password. pgweb connects as
+`mandate_readonly` and should be stopped when you are finished. Keep that password URL-safe;
+it is placed in the connection string.
+
+```bash
+cd deploy
+docker compose --env-file ../.env --profile admin up -d
+docker compose --env-file ../.env stop filebrowser portainer caddy-admin
+
+docker compose --env-file ../.env --profile dbadmin up -d
+docker compose --env-file ../.env stop pgweb caddy-admin
+```
+
+Cockpit is installed on the host, not in Compose. The script does not open the firewall:
+
+```bash
+sudo COCKPIT_BIND=127.0.0.1 deploy/host/install-cockpit.sh
+sudo systemctl stop cockpit.socket
+```
+
+Reach these through IAP, not the public address. The firewall should allow `35.235.240.0/20`
+only on ports 22, 8443 and 9090.
+
+```bash
+gcloud compute start-iap-tunnel mandate-prod 8443 --local-host-port=localhost:8443 --zone=us-central1-a
+gcloud compute start-iap-tunnel mandate-prod 9090 --local-host-port=localhost:9090 --zone=us-central1-a
+gcloud compute ssh mandate-prod --tunnel-through-iap --zone=us-central1-a
+```
+
+Then open `http://127.0.0.1:8443/files`, `http://127.0.0.1:8443/portainer`, and, while pgweb
+is running, `http://127.0.0.1:8443/pgweb`. Cockpit is `https://127.0.0.1:9090`.
+
 ## Scaling and limits
 
 - Run **one gateway process** for now. Idempotency is shared through the database, but the rate
@@ -214,3 +256,4 @@ safe to send. Only containers labelled for Datadog are collected; the seller and
 - `.env` and the Qatom token are readable only by their owner on the server.
 - The seller port is not reachable from the internet (`curl https://api.mandatepay.tech:8001` fails).
 - Postgres is not reachable from the internet either (port 5432 is not published).
+- Ports 8443 and 9090 are not reachable on the public address.

@@ -1,0 +1,20 @@
+# Private admin site. The compose port binding is 127.0.0.1 (or the VM internal IP), not a public interface.
+{
+	auto_https off
+}
+
+:8443 {
+	encode gzip
+	handle /files* {
+		reverse_proxy filebrowser:80
+	}
+	handle /portainer* {
+		reverse_proxy portainer:9000
+	}
+	handle /pgweb* {
+		reverse_proxy pgweb:8081
+	}
+	handle {
+		respond "not found" 404
+	}
+}
