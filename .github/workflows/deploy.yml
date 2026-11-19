@@ -86,9 +86,12 @@ jobs:
             mandate
           docker push "${image}:${DEPLOY_SHA}"
           docker push "${image}:latest"
-          # Values are quoted for the remote shell. Nothing secret is passed.
-          remote=$(printf 'set -euo pipefail; cd %q; git fetch --force origin %q; git checkout --detach %q; MANDATE_IMAGE=%q bash mandate/deploy/remote-up.sh' \
-            "$dir" "$DEPLOY_SHA" "$DEPLOY_SHA" "${image}:${DEPLOY_SHA}")
+          # The OS Login user can sudo, but it is not in the group that owns the
+          # checkout. Run git, the registry login, and compose as root. %q keeps
+          # the SHA, directory, and image out of the shell. Nothing secret is passed.
+          script=$(printf 'set -euo pipefail; cd %q; git fetch --force origin %q; git checkout --detach %q; bash mandate/deploy/remote-up.sh' \
+            "$dir" "$DEPLOY_SHA" "$DEPLOY_SHA")
+          remote=$(printf 'sudo env MANDATE_IMAGE=%q bash -c %q' "${image}:${DEPLOY_SHA}" "$script")
           gcloud compute ssh "$GCE_INSTANCE" \
             --project="$GCP_PROJECT_ID" \
             --zone="$GCE_ZONE" \
