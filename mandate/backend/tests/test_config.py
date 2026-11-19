@@ -35,6 +35,17 @@ def test_production_refuses_each_unsafe_setting(change, needle):
         load_settings({**PROD, **change})
 
 
+def test_cors_origins_split_on_commas_and_one_value_stays_one_value():
+    assert load_settings(PROD).cors_origins == ("http://localhost:3000",)
+    single = load_settings({**PROD, "MANDATE_CORS_ORIGINS": "http://localhost:3000"})
+    assert single.cors_origins == ("http://localhost:3000",)
+    several = load_settings({**PROD, "MANDATE_CORS_ORIGINS":
+                             " https://app.mandatepay.tech, , https://market.mandatepay.tech "})
+    assert several.cors_origins == ("https://app.mandatepay.tech", "https://market.mandatepay.tech")
+    with pytest.raises(ConfigError, match="cannot be '\\*'"):
+        load_settings({**PROD, "MANDATE_CORS_ORIGINS": "http://localhost:3000, *"})
+
+
 def test_sandbox_is_explicit_and_keeps_data_on_disk_by_default():
     s = load_settings({"MANDATE_MODE": "sandbox"})
     assert (s.rail, s.seller_mode, s.database_url) == ("mock", "mock", "sqlite:///mandate-sandbox.db")

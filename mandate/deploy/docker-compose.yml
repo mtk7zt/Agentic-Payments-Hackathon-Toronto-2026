@@ -103,7 +103,7 @@ services:
     restart: unless-stopped
     ports: ["80:80", "443:443"]
     environment:
-      MANDATE_DOMAIN: ${MANDATE_DOMAIN:?set MANDATE_DOMAIN (for example api.example.com) in ../.env}
+      MANDATE_DOMAIN: ${MANDATE_DOMAIN:?set MANDATE_DOMAIN (api.mandatepay.tech) in ../.env}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
       - caddy_data:/data

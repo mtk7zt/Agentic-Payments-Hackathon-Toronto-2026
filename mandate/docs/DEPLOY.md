@@ -56,14 +56,36 @@ gateway use that value and do not replace it. This compose file still starts the
 Postgres, so the three passwords above are still required. On a managed host that does not use
 this compose file, only `DATABASE_URL` matters (route B).
 
+## DNS
+
+The production value of `MANDATE_DOMAIN` is `api.mandatepay.tech`. Caddy reads `$MANDATE_DOMAIN`
+from the environment. The Caddyfile does not hard-code the name.
+
+At GoDaddy, open DNS for `mandatepay.tech` and add an A record:
+
+| Host | Type | Value |
+| --- | --- | --- |
+| `api` | A | the static external IP of `mandate-prod` |
+
+Caddy requests a certificate once that name resolves to the VM. Check:
+
+```bash
+nslookup api.mandatepay.tech
+curl -fsS https://api.mandatepay.tech/live
+curl -fsS https://api.mandatepay.tech/ready
+```
+
+`nslookup` should print that same IP. `/live` returns `{"live":true}` and `/ready` returns
+`{"ready":true}`.
+
 ## Route A: one VPS (DigitalOcean, Hetzner, Vultr, Lightsail, Azure VM)
 
 You need an Ubuntu 22.04 or 24.04 server, a domain or subdomain for the API (for example
 `api.mandatepay.tech`), and SSH access. The bundled Postgres wants about 4 GB of RAM on the
 machine. An external database can get by with less.
 
-1. **Point the domain at the server.** Add a DNS `A` record for `api.mandatepay.tech` with the
-   server's public IP. Caddy cannot issue the HTTPS certificate until this resolves.
+1. **Point the domain at the server.** Add the GoDaddy A record described under DNS above.
+   Caddy cannot issue the HTTPS certificate until `api.mandatepay.tech` resolves.
 2. **Install Docker** on the server:
 
    ```bash
@@ -93,7 +115,7 @@ machine. An external database can get by with less.
    MANDATE_SELLER_MODE=http
    MANDATE_OWNER_TOKEN=<43-character random string>
    MANDATE_SELLER_TOKEN=<a different random string>
-   MANDATE_CORS_ORIGINS=https://your-console-domain
+   MANDATE_CORS_ORIGINS=http://localhost:3000
    MANDATE_DOMAIN=api.mandatepay.tech
    POSTGRES_PASSWORD=<url-safe random string>
    MANDATE_DB_PASSWORD=<a different url-safe random string>
@@ -101,8 +123,11 @@ machine. An external database can get by with less.
    ```
 
    For the bundled database, leave `DATABASE_URL` empty. For an external one, set `DATABASE_URL`
-   to the URI in the example above. Make each token with
-   `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+   to the URI in the example above. `MANDATE_CORS_ORIGINS` is a comma-separated list of exact
+   origins. Spaces around the commas are ignored, and so are empty entries. One origin still
+   works. `*` is refused. Leave the value at `http://localhost:3000` until the console exists.
+   Later it can be `https://app.mandatepay.tech,https://market.mandatepay.tech`.
+   Make each token with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
    Then `chmod 600 .env`.
 6. **Give the gateway the Qatom sign-in.** Run `py -m scripts.qatom_login` on your own machine,
    then copy the token file (`~/.toda-mcp-token.json`) to the server as
@@ -178,7 +203,8 @@ safe to send. Only containers labelled for Datadog are collected; the seller and
   limiter is per process (see `docs/OPERATIONS.md`); more replicas multiply the effective limit.
 - The ledger serialises writes with a PostgreSQL advisory lock, so a second replica is safe for
   correctness when you do add one.
-- Keep `MANDATE_CORS_ORIGINS` to the console's exact origin. `*` is refused at start-up.
+- Keep `MANDATE_CORS_ORIGINS` to exact origins, separated by commas. `*` is refused at start-up.
+  Until the console exists, leave the list at `http://localhost:3000`.
 
 ## Before calling a deployment done
 
