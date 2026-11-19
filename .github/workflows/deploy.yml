@@ -1,0 +1,81 @@
+# Deploy the default Compose stack to the VM. Pull requests do not run this.
+name: deploy
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      sha:
+        description: Commit to check out on the server. Empty uses this run's SHA.
+        required: false
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    environment: production
+    # Unset repository variables skip the job, so a merge stays green before the
+    # project is wired up. A run that is not on main is skipped too.
+    if: >-
+      github.ref == 'refs/heads/main' &&
+      vars.GCP_PROJECT_ID != '' &&
+      vars.GCP_WIF_PROVIDER != '' &&
+      vars.GCP_DEPLOY_SA != '' &&
+      vars.GCE_INSTANCE != '' &&
+      vars.GCE_ZONE != ''
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: google-github-actions/auth@7c6bc770dae815cd3e89ee6cdf493a5fab2cc093 # v3
+        with:
+          project_id: ${{ vars.GCP_PROJECT_ID }}
+          workload_identity_provider: ${{ vars.GCP_WIF_PROVIDER }}
+          service_account: ${{ vars.GCP_DEPLOY_SA }}
+
+      - uses: google-github-actions/setup-gcloud@aa5489c8933f4cc7a4f7d45035b3b1440c9c10db # v3.0.1
+
+      - name: Deploy on the server
+        env:
+          GCP_PROJECT_ID: ${{ vars.GCP_PROJECT_ID }}
+          GCE_INSTANCE: ${{ vars.GCE_INSTANCE }}
+          GCE_ZONE: ${{ vars.GCE_ZONE }}
+          GCE_DEPLOY_DIR: ${{ vars.GCE_DEPLOY_DIR }}
+          GCP_AR_HOST: ${{ vars.GCP_AR_HOST }}
+          DEPLOY_SHA: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.sha || github.sha }}
+        run: |
+          set -euo pipefail
+          if ! [[ "$DEPLOY_SHA" =~ ^[0-9a-fA-F]{40}$ ]]; then
+            echo "refusing to deploy an unsafe ref" >&2
+            exit 1
+          fi
+          dir="${GCE_DEPLOY_DIR:-/srv/mandate/app}"
+          case "$dir" in
+            *[!A-Za-z0-9/_.-]*)
+              echo "refusing an unsafe deploy directory" >&2
+              exit 1
+              ;;
+          esac
+          export CLOUDSDK_CORE_DISABLE_PROMPTS=1
+          # Values are quoted for the remote shell. Nothing secret is passed.
+          remote=$(printf 'set -euo pipefail; cd %q; git fetch --force origin %q; git checkout --detach %q; GCP_AR_HOST=%q bash mandate/deploy/remote-up.sh' \
+            "$dir" "$DEPLOY_SHA" "$DEPLOY_SHA" "$GCP_AR_HOST")
+          gcloud compute ssh "$GCE_INSTANCE" \
+            --project="$GCP_PROJECT_ID" \
+            --zone="$GCE_ZONE" \
+            --tunnel-through-iap \
+            --quiet \
+            --ssh-flag="-o StrictHostKeyChecking=accept-new" \
+            --command="$remote"
