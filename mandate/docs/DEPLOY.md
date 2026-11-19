@@ -356,7 +356,8 @@ The cockpit in `mandate/frontend` is a Vercel project. Set the project root dire
 `mandate/frontend`. The hostname is `app.mandatepay.tech`. Add the domain on Vercel's domain
 screen, then copy the record Vercel shows into GoDaddy. Do not guess the address.
 
-Set these on Vercel. They stay on the server. Do not set `NEXT_PUBLIC_MANDATE_OWNER_TOKEN`.
+Set these on Vercel. They stay on the server. next-auth v4 needs `NEXTAUTH_URL` and
+`NEXTAUTH_SECRET` in production. Do not set `NEXT_PUBLIC_MANDATE_OWNER_TOKEN`.
 A production or preview build fails if that name is set.
 
 | Name | Where |

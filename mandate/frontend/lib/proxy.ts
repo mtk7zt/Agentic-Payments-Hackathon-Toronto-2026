@@ -10,8 +10,15 @@ function gatewayBase(): string {
   return base;
 }
 
+/** Console approval is not a cockpit call. The approvals page talks to the gateway on the server. */
+export function refusesConsoleUsers(path: string): boolean {
+  const bare = path.split("?")[0].replace(/\/+$/, "").toLowerCase();
+  return bare === "/api/v1/console-users" || bare.startsWith("/api/v1/console-users/");
+}
+
 /** Forward one cockpit call. The owner token stays on this server. */
 export async function proxyGateway(request: Request, path: string): Promise<Response> {
+  if (refusesConsoleUsers(path)) return Response.json({ detail: "not available" }, { status: 403 });
   const denied = await requireApproved();
   if (denied) return denied;
   const incoming = new URL(request.url);
