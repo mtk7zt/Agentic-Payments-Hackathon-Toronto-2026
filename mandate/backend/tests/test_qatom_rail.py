@@ -1,5 +1,6 @@
 """Qatom adapter: the two-call approval contract observed in MND-01."""
 import httpx
+import pytest
 
 from backend.services.payment_rail import RailOutcome
 from backend.services.qatom_rail import (
@@ -85,6 +86,19 @@ def test_mcp_client_initializes_once_and_reads_sse():
     c = McpClient("https://x/mcp", "tok", client=httpx.Client(transport=httpx.MockTransport(handler)))
     assert c.call_tool("agent_wallet_info", {}) == ("hello", False)
     assert seen[1][1] == "s1" and seen[0][2] == "Bearer tok"
+
+
+def test_missing_token_file_fails_closed(tmp_path, monkeypatch):
+    missing = tmp_path / "token.json"
+    monkeypatch.setenv("QATOM_TOKEN_FILE", str(missing))
+    cfg = QatomConfig.from_env()
+    assert cfg.token_file == str(missing)
+    with pytest.raises(RuntimeError, match="Qatom token file not found"):
+        QatomRail(cfg)
+    empty = tmp_path / "empty.json"
+    empty.write_text("{}")
+    with pytest.raises(RuntimeError, match="no access_token"):
+        QatomConfig(token_file=str(empty)).token()
 
 
 def test_refusal_keeps_qatom_reason_without_credential_like_values():

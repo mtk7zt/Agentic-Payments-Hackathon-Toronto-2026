@@ -129,10 +129,11 @@ machine. An external database can get by with less.
    Later it can be `https://app.mandatepay.tech,https://market.mandatepay.tech`.
    Make each token with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
    Then `chmod 600 .env`.
-6. **Give the gateway the Qatom sign-in.** Run `py -m scripts.qatom_login` on your own machine,
-   then copy the token file (`~/.toda-mcp-token.json`) to the server as
-   `mandate/deploy/secrets/qatom-token.json` and `chmod 600` it. The `secrets/` folder is ignored
-   by git. The token lasts about 3 days; repeat this step when it expires.
+6. **Give the gateway the Qatom sign-in.** Sign in on your own machine (`docs/rails/QATOM.md`),
+   add that file as a version of the secret `mandate-qatom-token`, then on the VM run
+   `sudo deploy/secrets/fetch-qatom-token.sh` before `docker compose up`. The token is a file,
+   never an environment value, and `deploy/secrets/` stays out of git. Renewal is in that same
+   doc. The VM needs outbound HTTPS on port 443 to `mcp.m.todaq.net` (allowed by default).
 7. **Start everything:**
 
    ```bash
