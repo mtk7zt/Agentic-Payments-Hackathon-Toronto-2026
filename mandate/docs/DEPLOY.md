@@ -240,7 +240,7 @@ gcloud compute start-iap-tunnel mandate-prod 9090 --local-host-port=localhost:90
 gcloud compute ssh mandate-prod --tunnel-through-iap --zone=us-central1-a
 ```
 
-Then open `http://127.0.0.1:8443/files`, `http://127.0.0.1:8443/portainer`, and, while pgweb
+Then open `http://127.0.0.1:8443/files`, `http://127.0.0.1:8443/portainer/`, and, while pgweb
 is running, `http://127.0.0.1:8443/pgweb`. Cockpit is `https://127.0.0.1:9090`.
 
 ## Production VM on Google Cloud
