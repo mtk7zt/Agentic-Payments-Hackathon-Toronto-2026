@@ -49,6 +49,8 @@ later by pgweb over IAP.
 The server is a 4 GiB VM. Postgres is given `shared_buffers` of 512MB, `work_mem` of 4MB and
 `max_connections` of 40, leaving the rest of the memory for the gateway, the seller and the OS.
 
+Nightly backups and the restore drill are in `docs/BACKUPS.md`.
+
 To keep an external database, set `DATABASE_URL` to the full URI. The migrate job and the
 gateway use that value and do not replace it. This compose file still starts the local
 Postgres, so the three passwords above are still required. On a managed host that does not use

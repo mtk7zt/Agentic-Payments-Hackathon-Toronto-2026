@@ -1,0 +1,11 @@
+[Unit]
+Description=Mandate encrypted Postgres backup
+After=docker.service
+Requires=docker.service
+
+[Service]
+Type=oneshot
+# The VM service account is how gcloud authenticates. Do not add a key file.
+EnvironmentFile=/etc/mandate/backup.env
+WorkingDirectory=/srv/mandate/app/mandate
+ExecStart=/srv/mandate/app/mandate/deploy/backup/backup.sh
