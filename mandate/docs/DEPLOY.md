@@ -16,13 +16,14 @@ Pick one of the two routes below. Both use the `Dockerfile` in `mandate/`.
 ## Bundled Postgres
 
 `deploy/docker-compose.yml` runs `postgres:16` next to the gateway. Port 5432 is not published
-on the host. Leave `DATABASE_URL` empty and set `POSTGRES_PASSWORD` and
-`MANDATE_READONLY_PASSWORD`. Compose then connects as
+on the host. Leave `DATABASE_URL` empty and set `POSTGRES_PASSWORD`, `MANDATE_DB_PASSWORD`
+and `MANDATE_READONLY_PASSWORD`. Compose then connects as
 
-`postgresql://mandate_gateway:<password>@postgres:5432/mandate`.
+`postgresql://mandate_gateway:<MANDATE_DB_PASSWORD>@postgres:5432/mandate`.
 
-Make both passwords with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
-`POSTGRES_PASSWORD` is copied into the gateway URL, so keep it to that alphabet.
+`POSTGRES_PASSWORD` is only the database superuser. The gateway process does not receive it.
+Make each password with `python3 -c "import secrets; print(secrets.token_urlsafe(32))"`.
+`MANDATE_DB_PASSWORD` is copied into the gateway URL, so keep it to that alphabet.
 
 Data goes to a named volume. To put it on the VM data disk instead, set
 `MANDATE_PGDATA=/srv/mandate/postgres`, create that directory, and give it to the Postgres
@@ -41,16 +42,17 @@ Once Postgres is healthy, compose runs `python -m backend.migrate` as `mandate_g
 starts the gateway. The gateway runs any migration that is still missing. Because
 `mandate_gateway` creates the tables, it owns them. That is what the PostgreSQL lockdown
 expects: row-level security is on and public grants are revoked, and the table owner still
-reads and writes. `mandate_readonly` bypasses row-level security so those `SELECT`s return
-rows; it has no write grants.
+reads and writes. `mandate_readonly` bypasses row-level security because that lockdown has no
+policies and would otherwise return no rows; it has no write grants, and it is only reached
+later by pgweb over IAP.
 
 The server is a 4 GiB VM. Postgres is given `shared_buffers` of 512MB, `work_mem` of 4MB and
 `max_connections` of 40, leaving the rest of the memory for the gateway, the seller and the OS.
 
 To keep an external database, set `DATABASE_URL` to the full URI. The migrate job and the
 gateway use that value and do not replace it. This compose file still starts the local
-Postgres, so the two passwords are still required. On a managed host that does not use this
-compose file, only `DATABASE_URL` matters (route B).
+Postgres, so the three passwords above are still required. On a managed host that does not use
+this compose file, only `DATABASE_URL` matters (route B).
 
 ## Route A: one VPS (DigitalOcean, Hetzner, Vultr, Lightsail, Azure VM)
 
@@ -92,7 +94,8 @@ machine. An external database can get by with less.
    MANDATE_CORS_ORIGINS=https://your-console-domain
    MANDATE_DOMAIN=api.mandatepay.tech
    POSTGRES_PASSWORD=<url-safe random string>
-   MANDATE_READONLY_PASSWORD=<a different random string>
+   MANDATE_DB_PASSWORD=<a different url-safe random string>
+   MANDATE_READONLY_PASSWORD=<a third random string>
    ```
 
    For the bundled database, leave `DATABASE_URL` empty. For an external one, set `DATABASE_URL`

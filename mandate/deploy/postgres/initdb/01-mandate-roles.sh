@@ -10,13 +10,13 @@
 # creates later, and no write grants.
 set -euo pipefail
 
-if [ -z "${POSTGRES_PASSWORD:-}" ] || [ -z "${MANDATE_READONLY_PASSWORD:-}" ]; then
-  echo "POSTGRES_PASSWORD and MANDATE_READONLY_PASSWORD are required" >&2
+if [ -z "${MANDATE_DB_PASSWORD:-}" ] || [ -z "${MANDATE_READONLY_PASSWORD:-}" ]; then
+  echo "MANDATE_DB_PASSWORD and MANDATE_READONLY_PASSWORD are required" >&2
   exit 1
 fi
 
 psql -v ON_ERROR_STOP=1 --username "${POSTGRES_USER:-postgres}" --dbname postgres \
-  -v gateway_password="$POSTGRES_PASSWORD" \
+  -v gateway_password="$MANDATE_DB_PASSWORD" \
   -v readonly_password="$MANDATE_READONLY_PASSWORD" <<'SQL'
 CREATE ROLE mandate_gateway WITH
   LOGIN

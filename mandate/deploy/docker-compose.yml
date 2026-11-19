@@ -12,6 +12,7 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in ../.env}
+      MANDATE_DB_PASSWORD: ${MANDATE_DB_PASSWORD:?set MANDATE_DB_PASSWORD in ../.env}
       MANDATE_READONLY_PASSWORD: ${MANDATE_READONLY_PASSWORD:?set MANDATE_READONLY_PASSWORD in ../.env}
     # A share of a 4 GiB VM. Huge pages are off; a small VM often has none.
     command:
@@ -48,6 +49,9 @@ services:
     env_file: ../.env
     entrypoint: ["/bin/sh", "/home/mandate/with-database.sh"]
     command: ["python", "-m", "backend.migrate"]
+    environment:
+      POSTGRES_PASSWORD: ""                    # superuser password stays on the postgres service
+      MANDATE_READONLY_PASSWORD: ""
     volumes:
       - ./postgres/with-database.sh:/home/mandate/with-database.sh:ro
     healthcheck:
@@ -68,6 +72,8 @@ services:
       MANDATE_SELLER_URL: http://seller:8001
       MANDATE_TRUST_PROXY_HEADERS: "1"        # the only way in is through Caddy below
       QATOM_TOKEN_FILE: /home/mandate/.qatom/token.json
+      POSTGRES_PASSWORD: ""                    # superuser password stays on the postgres service
+      MANDATE_READONLY_PASSWORD: ""
     volumes:
       - ./secrets/qatom-token.json:/home/mandate/.qatom/token.json:ro
       - ./postgres/with-database.sh:/home/mandate/with-database.sh:ro
