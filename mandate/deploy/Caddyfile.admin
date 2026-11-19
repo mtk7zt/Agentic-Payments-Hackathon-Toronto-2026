@@ -8,7 +8,8 @@
 	handle /files* {
 		reverse_proxy filebrowser:80
 	}
-	handle /portainer* {
+	redir /portainer /portainer/ 308
+	handle_path /portainer/* {
 		reverse_proxy portainer:9000
 	}
 	handle /pgweb* {
